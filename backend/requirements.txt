@@ -1,0 +1,30 @@
+# --- Agent Frameworks ---
+langchain
+langchain-core
+langchain-community
+langgraph
+
+# --- LLM Providers ---
+google-generativeai
+groq
+
+# --- Vector Store for RAG ---
+chromadb
+sentence-transformers
+
+# --- Backend API ---
+fastapi
+uvicorn[standard]
+
+# --- Observability ---
+langsmith
+
+# --- Data validation ---
+pydantic
+
+# --- HTTP utilities ---
+requests
+aiohttp
+
+# --- Environment variables ---
+python-dotenv
