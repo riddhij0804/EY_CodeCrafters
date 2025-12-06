@@ -1,0 +1,308 @@
+"""
+Session management module for a multi-channel retail AI system.
+
+This module implements an in-memory session store and three HTTP endpoints:
+- POST /session/start   -> create a new session and return a session token
+- GET  /session/restore -> retrieve a session using the `X-Session-Token` header
+- POST /session/update  -> update session state based on an action
+
+All data is kept in memory (no database). This file is a standalone FastAPI app
+so it can be run directly with `uvicorn backend.session_manager:app`.
+
+Every function and major step contains inline comments and docstrings.
+"""
+
+# Standard library imports
+import uuid
+import logging
+from typing import Dict, Any, Optional
+from datetime import datetime
+
+# FastAPI imports
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+import uvicorn
+
+# Configure a simple logger for this module
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(title="Session Manager", version="1.0.0")
+
+# In-memory session store (mapping session_token -> session dict)
+# This satisfies the "no database" requirement; all data is lost on process restart.
+SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+# -----------------------------
+# Pydantic models for requests
+# -----------------------------
+
+class StartSessionRequest(BaseModel):
+    """Request model for starting a session.
+
+    Optional `user_id` can be provided; if omitted it will be `null` (None).
+    """
+    user_id: Optional[str] = Field(default=None, description="Optional user id to associate with session")
+
+
+class StartSessionResponse(BaseModel):
+    """Response model returned after creating a session."""
+    session_token: str
+    session: Dict[str, Any]
+
+
+class UpdateSessionRequest(BaseModel):
+    """Request model for updating session state.
+
+    `action` must be one of: `add_to_cart`, `view_product`, `chat_message`.
+    `payload` is an arbitrary dict that contains data required by the action.
+    """
+    action: str = Field(..., description="Action type to apply to the session")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Action-specific data payload")
+
+
+class RestoreSessionResponse(BaseModel):
+    """Response model returned when restoring a session."""
+    session: Dict[str, Any]
+
+
+class UpdateSessionResponse(BaseModel):
+    """Response model returned after successfully updating a session."""
+    session: Dict[str, Any]
+
+# -----------------------------
+# Helper functions
+# -----------------------------
+
+def _now_iso() -> str:
+    """Return the current UTC time as an ISO-formatted string.
+
+    This helps keep timestamps consistent across session objects.
+    """
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def generate_session_token() -> str:
+    """Generate a secure session token.
+
+    Uses UUID4 hex representation to create a reasonably unique token.
+    Returns:
+        A string token suitable for use in headers and storage keys.
+    """
+    # Create a random UUID and return the hex string (32 chars, lower-case)
+    token = uuid.uuid4().hex
+    return token
+
+
+def create_session(user_id: Optional[str] = None) -> (str, Dict[str, Any]):
+    """Create a new session object and store it in the in-memory store.
+
+    The session schema follows the user's requirements:
+    - session_id: uuid
+    - user_id: can be `None` initially
+    - data: { cart: [], recent: [], chat_context: [], last_action: None }
+    - updated_at: timestamp
+
+    Args:
+        user_id: Optional user identifier to attach to the session.
+
+    Returns:
+        Tuple of (session_token, session_dict)
+    """
+    # Generate the unique token used by clients to refer to this session
+    token = generate_session_token()
+
+    # Build the session payload with the required structure
+    session = {
+        "session_id": str(uuid.uuid4()),  # unique id for the session
+        "user_id": user_id,  # can be None
+        "data": {
+            "cart": [],  # list of cart items
+            "recent": [],  # recently viewed products
+            "chat_context": [],  # chat history between user and agent
+            "last_action": None,  # track last action performed
+        },
+        "updated_at": _now_iso(),  # timestamp for last update
+    }
+
+    # Store session in the global in-memory dict
+    SESSIONS[token] = session
+
+    # Log for visibility during development
+    logger.info(f"Created new session: token={token}, session_id={session['session_id']}")
+
+    return token, session
+
+
+def get_session(token: str) -> Dict[str, Any]:
+    """Retrieve a session by its token from the in-memory store.
+
+    Args:
+        token: Session token provided by the client.
+
+    Raises:
+        HTTPException 404 if session not found.
+
+    Returns:
+        The session dictionary if found.
+    """
+    # Attempt to fetch the session from the global store
+    session = SESSIONS.get(token)
+    if session is None:
+        # Return an HTTP error if the token is unknown
+        logger.warning(f"Session token not found: {token}")
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return session
+
+
+def update_session_state(token: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply an action to a session's state and persist it in memory.
+
+    Supported actions:
+    - add_to_cart: expects `payload['item']` -> item is appended to `data['cart']`
+    - view_product: expects `payload['product_id']` -> appended to `data['recent']`
+    - chat_message: expects `payload['message']` -> appended to `data['chat_context']` with timestamp
+
+    Args:
+        token: Session token identifying which session to update.
+        action: Action string describing the update.
+        payload: Action-specific data.
+
+    Returns:
+        The updated session dictionary.
+
+    Raises:
+        HTTPException 400 for unknown actions or missing payload data.
+    """
+    # Retrieve the session or raise 404
+    session = get_session(token)
+
+    # Shortcut reference to the mutable data sub-dictionary
+    data = session["data"]
+
+    # Handle each supported action explicitly
+    if action == "add_to_cart":
+        # Validate payload contains the expected 'item'
+        item = payload.get("item")
+        if item is None:
+            raise HTTPException(status_code=400, detail="'item' is required for add_to_cart action")
+
+        # Append the item to the cart list
+        data["cart"].append(item)
+        data["last_action"] = {
+            "type": "add_to_cart",
+            "item": item,
+            "timestamp": _now_iso()
+        }
+
+        logger.info(f"Added item to cart for token={token}: {item}")
+
+    elif action == "view_product":
+        # Validate payload contains 'product_id' or 'product'
+        product = payload.get("product") or payload.get("product_id")
+        if product is None:
+            raise HTTPException(status_code=400, detail="'product' or 'product_id' is required for view_product action")
+
+        # Keep recent as a simple list; prepend newest views
+        data["recent"].insert(0, {"product": product, "viewed_at": _now_iso()})
+
+        # Optionally cap recent history length to avoid memory blowup
+        if len(data["recent"]) > 50:
+            data["recent"] = data["recent"][:50]
+
+        data["last_action"] = {"type": "view_product", "product": product, "timestamp": _now_iso()}
+
+        logger.info(f"Recorded product view for token={token}: {product}")
+
+    elif action == "chat_message":
+        # Validate payload contains 'message'
+        message = payload.get("message")
+        if message is None:
+            raise HTTPException(status_code=400, detail="'message' is required for chat_message action")
+
+        # Record the chat message with a timestamp and optional sender (defaults to 'user')
+        sender = payload.get("sender", "user")
+        chat_entry = {"sender": sender, "message": message, "timestamp": _now_iso()}
+        data["chat_context"].append(chat_entry)
+
+        data["last_action"] = {"type": "chat_message", "sender": sender, "timestamp": _now_iso()}
+
+        logger.info(f"Appended chat message for token={token}: sender={sender}")
+
+    else:
+        # Unknown action type -> client error
+        logger.error(f"Unknown action attempted: {action}")
+        raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
+
+    # Update the session-level timestamp to reflect mutation
+    session["updated_at"] = _now_iso()
+
+    # Persist change back to the global store (not strictly necessary for mutable dicts)
+    SESSIONS[token] = session
+
+    # Return the updated session
+    return session
+
+# -----------------------------
+# API Endpoints
+# -----------------------------
+
+@app.post("/session/start", response_model=StartSessionResponse)
+async def session_start(request: StartSessionRequest):
+    """Start a new session and return its token and initial state.
+
+    The endpoint accepts an optional `user_id` and returns the generated
+    `session_token` together with the full session object.
+    """
+    # Create the session using helper; this stores it in-memory
+    token, session = create_session(user_id=request.user_id)
+
+    # Explicitly return a JSONResponse to ensure consistent JSON outputs
+    return JSONResponse(status_code=200, content={"session_token": token, "session": session})
+
+
+@app.get("/session/restore", response_model=RestoreSessionResponse)
+async def session_restore(x_session_token: Optional[str] = Header(None, alias="X-Session-Token")):
+    """Restore a session using the `X-Session-Token` header.
+
+    If the header is missing or the token is invalid, this endpoint returns an HTTP error.
+    """
+    # Ensure a token was provided by the client
+    if not x_session_token:
+        raise HTTPException(status_code=400, detail="Missing X-Session-Token header")
+
+    # Retrieve the session using our helper (raises 404 if not found)
+    session = get_session(x_session_token)
+
+    # Return the session inside a JSON response
+    return JSONResponse(status_code=200, content={"session": session})
+
+
+@app.post("/session/update", response_model=UpdateSessionResponse)
+async def session_update(
+    request: UpdateSessionRequest,
+    x_session_token: Optional[str] = Header(None, alias="X-Session-Token")
+):
+    """Update a session's state based on an action and payload.
+
+    The client must provide the `X-Session-Token` header to identify the session,
+    and the request body must contain `action` and a `payload` dict.
+    """
+    # Validate header presence
+    if not x_session_token:
+        raise HTTPException(status_code=400, detail="Missing X-Session-Token header")
+
+    # Apply the requested update using our helper function
+    updated_session = update_session_state(x_session_token, request.action, request.payload)
+
+    # Return the updated session
+    return JSONResponse(status_code=200, content={"session": updated_session})
+
+
+# Allow this module to be executed directly for local development
+if __name__ == "__main__":
+    # Run uvicorn with this module's `app` object
+    uvicorn.run("backend.session_manager:app", host="0.0.0.0", port=8001, reload=True)
