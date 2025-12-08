@@ -1,17 +1,19 @@
 """
-Integration Test Script for Inventory → Payment → Fulfillment Workflow
-=====================================================================
+Integration Test Script for Complete E-Commerce Workflow
+=========================================================
 
-This script validates the complete order fulfillment flow using real CSV data
-from the data/ folder. It tests the integration of three microservices:
+This script validates the complete end-to-end customer journey using real CSV data
+from the data/ folder. It tests the integration of ALL microservices:
 - Inventory Agent (port 8001)
 - Payment Agent (port 8003)  
 - Fulfillment Agent (port 8004)
+- Post-Purchase Agent (port 8005)
+- Stylist Agent (port 8006)
 
 The script does NOT modify any agent code or datasets.
 It only reads CSV files and makes HTTP calls to the agents.
 
-Author: EY CodeCrafters Team
+Author: python test_integration_workflow.pyEY CodeCrafters Team
 Date: December 2025
 """
 
@@ -32,6 +34,8 @@ import sys
 INVENTORY_AGENT_URL = "http://localhost:8001"  # Fixed: Inventory runs on 8001, not 8002
 PAYMENT_AGENT_URL = "http://localhost:8003"
 FULFILLMENT_AGENT_URL = "http://localhost:8004"
+POST_PURCHASE_AGENT_URL = "http://localhost:8005"
+STYLIST_AGENT_URL = "http://localhost:8006"
 
 # Data file paths
 DATA_DIR = Path(__file__).parent / "data"
@@ -368,6 +372,175 @@ def start_fulfillment(order_id: str, hold_id: str, payment_id: str,
         }
 
 
+def test_post_purchase_return(order_id: str, customer_id: int, order_items: List[Dict], datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """
+    Call Post-Purchase Agent to test return functionality.
+    
+    Args:
+        order_id: Order ID
+        customer_id: Customer ID
+        order_items: List of items in the order
+        datasets: Dict of pandas DataFrames
+        
+    Returns:
+        dict with keys: success, return_id, status, message
+    """
+    try:
+        # Test return for first item in order
+        first_item = order_items[0]
+        
+        return_request = {
+            "user_id": str(customer_id),
+            "order_id": order_id,
+            "product_sku": first_item['sku'],
+            "reason_code": "QUALITY_ISSUE",
+            "additional_comments": "Quality issue - Integration test"
+        }
+        
+        response = requests.post(
+            f"{POST_PURCHASE_AGENT_URL}/post-purchase/return",
+            json=return_request,
+            timeout=TIMEOUT
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "success": True,
+                "return_id": data.get("return_id"),
+                "status": data.get("status"),
+                "refund_amount": data.get("refund_amount"),
+                "message": f"Return initiated successfully for {first_item['sku']}"
+            }
+        else:
+            error_detail = response.json().get("detail", "Unknown error")
+            return {
+                "success": False,
+                "return_id": None,
+                "status": None,
+                "refund_amount": 0.0,
+                "message": f"Return failed: {error_detail}"
+            }
+            
+    except requests.exceptions.ConnectionError:
+        return {
+            "success": False,
+            "return_id": None,
+            "status": None,
+            "refund_amount": 0.0,
+            "message": "Cannot connect to Post-Purchase Agent. Is it running on port 8005?"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "return_id": None,
+            "status": None,
+            "refund_amount": 0.0,
+            "message": f"Post-purchase error: {str(e)}"
+        }
+
+
+def test_stylist_recommendations(customer_id: int, order_items: List[Dict], datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    """
+    Call Stylist Agent to get AI outfit recommendations.
+    
+    Args:
+        customer_id: Customer ID
+        order_items: List of items purchased
+        datasets: Dict of pandas DataFrames
+        
+    Returns:
+        dict with keys: success, recommendations, message
+    """
+    try:
+        # Get outfit suggestions based on purchased items
+        first_item = order_items[0]
+        sku = first_item['sku']
+        
+        # Get product details from products.csv
+        products_df = datasets['products']
+        product = products_df[products_df['sku'] == sku]
+        
+        if product.empty:
+            return {
+                "success": False,
+                "recommendations": 0,
+                "ai_used": False,
+                "message": f"Product {sku} not found in catalog"
+            }
+        
+        product_details = product.iloc[0]
+        
+        # Convert pandas null/NaN to None, and handle missing fields
+        color = product_details.get('BaseColour')
+        if pd.isna(color):
+            color = None
+        
+        brand = product_details.get('brand')
+        if pd.isna(brand):
+            brand = None
+        
+        stylist_request = {
+            "user_id": str(customer_id),
+            "product_sku": sku,
+            "product_name": str(product_details['ProductDisplayName']),
+            "category": str(product_details['category']),
+            "color": color,
+            "brand": brand
+        }
+        
+        response = requests.post(
+            f"{STYLIST_AGENT_URL}/stylist/outfit-suggestions",
+            json=stylist_request,
+            timeout=TIMEOUT
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            # API returns recommendations object with recommended_products array
+            recommendations_obj = data.get("recommendations", {})
+            recommended_products = recommendations_obj.get("recommended_products", [])
+            styling_tips = recommendations_obj.get("styling_tips", [])
+            purchased_product = data.get("purchased_product", {})
+            
+            # Format purchased product info
+            purchased_info = f"{purchased_product.get('name', 'Unknown')} ({purchased_product.get('category', 'N/A')})"
+            
+            return {
+                "success": True,
+                "recommendations": len(recommended_products),
+                "styling_tips": len(styling_tips),
+                "ai_used": True,  # API uses Groq AI
+                "purchased_product": purchased_info,
+                "detailed_recommendations": recommended_products,  # Full list
+                "styling_tips_list": styling_tips,  # Full list
+                "message": f"AI generated {len(recommended_products)} outfit recommendations with {len(styling_tips)} styling tips"
+            }
+        else:
+            error_detail = response.json().get("detail", "Unknown error")
+            return {
+                "success": False,
+                "recommendations": 0,
+                "ai_used": False,
+                "message": f"Stylist failed: {error_detail}"
+            }
+            
+    except requests.exceptions.ConnectionError:
+        return {
+            "success": False,
+            "recommendations": 0,
+            "ai_used": False,
+            "message": "Cannot connect to Stylist Agent. Is it running on port 8006?"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "recommendations": 0,
+            "ai_used": False,
+            "message": f"Stylist error: {str(e)}"
+        }
+
+
 # ============================================================================
 # MAIN TEST WORKFLOW
 # ============================================================================
@@ -517,22 +690,93 @@ def test_full_order_flow(order_id: str, datasets: Dict[str, pd.DataFrame]) -> Di
     else:
         print(f"   ✗ Fulfillment failed")
         result['errors'].append(fulfillment_result['message'])
+        return result  # Stop if fulfillment fails
+    
+    # Step 5: Test Post-Purchase Return (simulating customer wants to return)
+    print(f"\n📦 STEP 4: POST-PURCHASE TESTING (Return Simulation)")
+    print("-" * 80)
+    
+    post_purchase_result = test_post_purchase_return(
+        order_id=order_id,
+        customer_id=int(order['customer_id']),
+        order_items=items,
+        datasets=datasets
+    )
+    
+    print(f"   Result: {post_purchase_result['message']}")
+    
+    if post_purchase_result['success']:
+        print(f"   ✓ Return ID: {post_purchase_result['return_id']}")
+        print(f"   ✓ Status: {post_purchase_result['status']}")
+        print(f"   ✓ Refund Amount: ₹{post_purchase_result['refund_amount']}")
+        result['post_purchase_tested'] = True
+        result['return_id'] = post_purchase_result['return_id']
+    else:
+        print(f"   ⚠ Post-purchase test failed (non-critical)")
+        result['post_purchase_tested'] = False
+        result['errors'].append(post_purchase_result['message'])
+    
+    # Step 6: Test Stylist Recommendations
+    print(f"\n👔 STEP 5: STYLIST AI RECOMMENDATIONS")
+    print("-" * 80)
+    
+    stylist_result = test_stylist_recommendations(
+        customer_id=int(order['customer_id']),
+        order_items=items,
+        datasets=datasets
+    )
+    
+    print(f"   Result: {stylist_result['message']}")
+    
+    if stylist_result['success']:
+        print(f"   ✓ Purchased Product: {stylist_result.get('purchased_product', 'N/A')}")
+        print(f"   ✓ AI Recommendations: {stylist_result['recommendations']} products")
+        print(f"   ✓ Styling Tips: {stylist_result.get('styling_tips', 0)} tips")
+        
+        # Display detailed recommendations if available
+        if stylist_result.get('detailed_recommendations'):
+            print(f"\n   📋 DETAILED AI RECOMMENDATIONS:")
+            for i, rec in enumerate(stylist_result['detailed_recommendations'][:3], 1):  # Show first 3
+                print(f"      {i}. {rec.get('name', 'N/A')} (SKU: {rec.get('sku', 'N/A')})")
+                print(f"         → {rec.get('reason', 'Complements your purchase')}")
+        
+        if stylist_result.get('styling_tips_list'):
+            print(f"\n   💡 AI STYLING TIPS:")
+            for i, tip in enumerate(stylist_result['styling_tips_list'][:3], 1):  # Show first 3
+                print(f"      {i}. {tip}")
+        
+        result['stylist_tested'] = True
+        result['recommendations_count'] = stylist_result['recommendations']
+    else:
+        print(f"   ⚠ Stylist test failed (non-critical)")
+        result['stylist_tested'] = False
+        result['errors'].append(stylist_result['message'])
     
     # Final Summary
     print(f"\n{'=' * 80}")
     print(f"WORKFLOW SUMMARY FOR {order_id}")
     print(f"{'=' * 80}")
     
-    if result['fulfillment_started']:
-        print(f"✓ STATUS: SUCCESS - Full workflow completed")
+    workflow_complete = (result['fulfillment_started'] and 
+                         result.get('post_purchase_tested', False) and 
+                         result.get('stylist_tested', False))
+    
+    result['workflow_complete'] = workflow_complete
+    
+    if workflow_complete:
+        print(f"✓ STATUS: SUCCESS - Complete customer journey tested")
         print(f"  → Inventory: Reserved ({result['hold_id']})")
         print(f"  → Payment: Verified ({result['payment_id']})")
         print(f"  → Fulfillment: Started ({result['fulfillment_id']})")
+        print(f"  → Post-Purchase: Tested ({result.get('return_id', 'N/A')})")
+        print(f"  → Stylist: {result.get('recommendations_count', 0)} recommendations generated")
     else:
-        print(f"✗ STATUS: FAILED")
+        print(f"✗ STATUS: PARTIAL SUCCESS - Some steps failed")
         print(f"  → Inventory: {'✓ Reserved' if result['inventory_reserved'] else '✗ Failed'}")
         print(f"  → Payment: {'✓ Verified' if result['payment_verified'] else '✗ Failed'}")
-        print(f"  → Fulfillment: ✗ Not Started")
+        print(f"  → Fulfillment: {'✓ Started' if result['fulfillment_started'] else '✗ Failed'}")
+        print(f"  → Post-Purchase: {'✓ Tested' if result.get('post_purchase_tested', False) else '✗ Failed'}")
+        print(f"  → Stylist: {'✓ Tested' if result.get('stylist_tested', False) else '✗ Failed'}")
         if result['errors']:
             print(f"\nErrors encountered:")
             for error in result['errors']:
@@ -553,9 +797,9 @@ def run_integration_tests(num_tests: int = 5):
         num_tests: Number of random orders to test
     """
     print("\n" + "=" * 80)
-    print("INTEGRATION TEST: Inventory → Payment → Fulfillment Workflow")
+    print("INTEGRATION TEST: Complete E-Commerce Customer Journey")
     print("=" * 80)
-    print(f"Testing {num_tests} random orders from the dataset\n")
+    print(f"Testing {num_tests} random orders through all 5 agents\n")
     
     # Load datasets
     datasets = load_datasets()
@@ -585,24 +829,28 @@ def run_integration_tests(num_tests: int = 5):
     print("FINAL TEST REPORT")
     print("=" * 80)
     
-    success_count = sum(1 for r in results if r['fulfillment_started'])
-    failure_count = len(results) - success_count
+    complete_success = sum(1 for r in results if r.get('workflow_complete', False))
+    partial_success = sum(1 for r in results if r['fulfillment_started'] and not r.get('workflow_complete', False))
+    failure_count = len(results) - complete_success - partial_success
     
     print(f"\nTotal Tests: {len(results)}")
-    print(f"✓ Successful: {success_count}")
+    print(f"✓ Complete Success (All 5 Agents): {complete_success}")
+    print(f"⚠ Partial Success (Core Flow Only): {partial_success}")
     print(f"✗ Failed: {failure_count}")
-    print(f"Success Rate: {(success_count / len(results) * 100):.1f}%")
+    print(f"Complete Success Rate: {(complete_success / len(results) * 100):.1f}%")
     
     print("\n" + "-" * 80)
     print("DETAILED RESULTS")
     print("-" * 80)
     
     for i, result in enumerate(results, 1):
-        status_icon = "✓" if result['fulfillment_started'] else "✗"
+        status_icon = "✓" if result.get('workflow_complete', False) else "✗"
         print(f"\n{i}. {status_icon} Order: {result['order_id']}")
         print(f"   Inventory: {'Reserved' if result['inventory_reserved'] else 'Failed'}")
         print(f"   Payment: {'Verified' if result['payment_verified'] else 'Failed'}")
         print(f"   Fulfillment: {'Started' if result['fulfillment_started'] else 'Not Started'}")
+        print(f"   Post-Purchase: {'Tested' if result.get('post_purchase_tested', False) else 'Skipped'}")
+        print(f"   Stylist: {'Recommendations Generated' if result.get('stylist_tested', False) else 'Skipped'}")
         
         if result['fulfillment_id']:
             print(f"   Fulfillment ID: {result['fulfillment_id']}")
@@ -622,21 +870,26 @@ if __name__ == "__main__":
     ╔════════════════════════════════════════════════════════════════════════════╗
     ║                  MULTI-AGENT INTEGRATION TEST SUITE                        ║
     ║                                                                            ║
-    ║  This script validates the integration of:                                 ║
-    ║    • Inventory Agent (port 8001)                                           ║
-    ║    • Payment Agent (port 8003)                                             ║
-    ║    • Fulfillment Agent (port 8004)                                         ║
+    ║  This script validates the COMPLETE CUSTOMER JOURNEY:                      ║
+    ║    • Inventory Agent (port 8001) - Stock reservation                       ║
+    ║    • Payment Agent (port 8003) - Payment processing                        ║
+    ║    • Fulfillment Agent (port 8004) - Order shipping                        ║
+    ║    • Post-Purchase Agent (port 8005) - Returns/Exchanges                   ║
+    ║    • Stylist Agent (port 8006) - AI styling recommendations                ║
     ║                                                                            ║
     ║  PREREQUISITES:                                                            ║
-    ║    1. All three agents must be running                                     ║
+    ║    1. All FIVE agents must be running                                      ║
     ║    2. Redis server must be running (default: localhost:6379)               ║
     ║    3. CSV datasets must exist in backend/data/ folder                      ║
+    ║    4. GROQ_API_KEY must be set in .env for Stylist AI                      ║
     ║                                                                            ║
     ║  WHAT THIS TEST DOES:                                                      ║
     ║    → Reads real order data from CSV files                                  ║
     ║    → Calls Inventory Agent to reserve stock (POST /hold)                   ║
     ║    → Calls Payment Agent to process payment (POST /payment/process)        ║
     ║    → Calls Fulfillment Agent to start order processing (POST /start)       ║
+    ║    → Simulates delivery and tests Post-Purchase returns                    ║
+    ║    → Tests Stylist Agent for AI outfit recommendations                     ║
     ║    → Reports success/failure for each order                                ║
     ║                                                                            ║
     ╚════════════════════════════════════════════════════════════════════════════╝

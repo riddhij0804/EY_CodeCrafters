@@ -3,7 +3,8 @@ Redis utilities for Post-Purchase Agent
 """
 import redis
 import os
-from typing import Optional, Dict
+import pandas as pd
+from typing import Optional, Dict, List
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -19,14 +20,64 @@ redis_client = redis.from_url(
     socket_connect_timeout=5
 ) if REDIS_URL else None
 
+# Load orders and products data
+ORDERS_CSV = os.path.join(os.path.dirname(__file__), "../../../data/orders.csv")
+PRODUCTS_CSV = os.path.join(os.path.dirname(__file__), "../../../data/products.csv")
+
+orders_df = pd.read_csv(ORDERS_CSV)
+products_df = pd.read_csv(PRODUCTS_CSV)
+
 
 def get_order_details(order_id: str) -> Optional[Dict]:
-    """Get order details from Redis"""
-    if not redis_client:
-        raise RuntimeError("Redis client not initialized")
+    """Get order details from orders.csv"""
+    order = orders_df[orders_df['order_id'] == order_id]
     
-    order_key = f"order:{order_id}"
-    order_data = redis_client.hgetall(order_key)
+    if order.empty:
+        return None
+    
+    row = order.iloc[0]
+    items_raw = eval(row['items'])
+    
+    # Enrich items with product details
+    enriched_items = []
+    for item in items_raw:
+        product = products_df[products_df['sku'] == item['sku']]
+        if not product.empty:
+            p = product.iloc[0]
+            enriched_items.append({
+                "sku": item['sku'],
+                "name": p['ProductDisplayName'],
+                "brand": p['brand'],
+                "category": p['category'],
+                "quantity": item['qty'],
+                "unit_price": item['unit_price'],
+                "line_total": item['line_total']
+            })
+    
+    return {
+        "order_id": row['order_id'],
+        "customer_id": str(row['customer_id']),
+        "items": enriched_items,
+        "total_amount": row['total_amount'],
+        "status": row['status'],
+        "created_at": row['created_at']
+    }
+
+
+def get_user_orders(user_id: str) -> List[Dict]:
+    """Get all orders for a user"""
+    user_orders = orders_df[orders_df['customer_id'] == int(user_id)]
+    
+    orders_list = []
+    for _, row in user_orders.iterrows():
+        orders_list.append({
+            "order_id": row['order_id'],
+            "total_amount": row['total_amount'],
+            "status": row['status'],
+            "created_at": row['created_at']
+        })
+    
+    return orders_list
     
     return order_data if order_data else None
 

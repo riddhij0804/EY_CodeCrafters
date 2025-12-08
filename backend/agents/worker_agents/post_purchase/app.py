@@ -200,10 +200,11 @@ async def get_return_reasons():
 async def process_return(request: ReturnRequest):
     """
     Process return request
+    Uses real orders from orders.csv
     
     Steps:
     1. Validate reason code
-    2. Check order eligibility
+    2. Check order from orders.csv
     3. Generate return ID
     4. Schedule pickup
     5. Initiate refund process
@@ -217,6 +218,20 @@ async def process_return(request: ReturnRequest):
             )
         
         reason_info = RETURN_REASONS[request.reason_code]
+        
+        # Step 1.5: Verify order exists in orders.csv
+        order = redis_utils.get_order_details(request.order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found in orders.csv")
+        
+        # Verify user owns this order
+        if order['customer_id'] != request.user_id:
+            raise HTTPException(status_code=403, detail="Order does not belong to this user")
+        
+        # Verify product in order
+        product_found = any(item['sku'] == request.product_sku for item in order['items'])
+        if not product_found:
+            raise HTTPException(status_code=404, detail="Product not found in this order")
         
         # Step 2: Generate return ID
         return_id = f"RET_{uuid.uuid4().hex[:12].upper()}"
@@ -263,14 +278,30 @@ async def process_return(request: ReturnRequest):
 async def process_exchange(request: ExchangeRequest):
     """
     Process exchange request (same product, different size)
+    Uses real orders from orders.csv
     
     Steps:
-    1. Validate size availability
-    2. Generate exchange ID
-    3. Create new order for different size
-    4. Schedule pickup of old item
+    1. Verify order from orders.csv
+    2. Validate size availability
+    3. Generate exchange ID
+    4. Create new order for different size
+    5. Schedule pickup of old item
     """
     try:
+        # Step 1: Verify order exists in orders.csv
+        order = redis_utils.get_order_details(request.order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found in orders.csv")
+        
+        # Verify user owns this order
+        if order['customer_id'] != request.user_id:
+            raise HTTPException(status_code=403, detail="Order does not belong to this user")
+        
+        # Verify product in order
+        product_found = any(item['sku'] == request.product_sku for item in order['items'])
+        if not product_found:
+            raise HTTPException(status_code=404, detail="Product not found in this order")
+        
         # Generate exchange ID
         exchange_id = f"EXC_{uuid.uuid4().hex[:12].upper()}"
         
@@ -364,12 +395,21 @@ async def raise_complaint(request: ComplaintRequest):
 
 @app.get("/post-purchase/returns/{user_id}")
 async def get_user_returns(user_id: str, limit: int = 10):
-    """Get user's return history"""
+    """
+    Get user's return history
+    Shows user's orders from orders.csv and their returns
+    """
     try:
+        # Get user's orders from orders.csv
+        user_orders = redis_utils.get_user_orders(user_id)
+        
+        # Get returns from Redis
         returns = redis_utils.get_user_returns(user_id, limit)
         
         return {
             "user_id": user_id,
+            "total_orders": len(user_orders),
+            "orders": user_orders,
             "total_returns": len(returns),
             "returns": returns
         }
