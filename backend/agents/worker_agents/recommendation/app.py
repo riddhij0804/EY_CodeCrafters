@@ -123,6 +123,7 @@ except Exception as e:
 
 class RecommendationRequest(BaseModel):
     customer_id: str = Field(..., description="Customer ID for personalization")
+    mode: str = Field("normal", description="Recommendation mode: normal, gifting_genius, trendseer")
     intent: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
         description="User intent: category, occasion, budget_min, budget_max, gender (male/female/unisex)"
@@ -132,6 +133,14 @@ class RecommendationRequest(BaseModel):
         description="SKUs currently in cart for cross-sell suggestions"
     )
     limit: int = Field(5, ge=1, le=20, description="Number of recommendations to return")
+    
+    # Gifting Genius specific fields
+    recipient_relation: Optional[str] = Field(None, description="Recipient relation (e.g., mother, friend)")
+    recipient_gender: Optional[str] = Field(None, description="Recipient gender (overrides customer gender)")
+    interests: Optional[List[str]] = Field(default_factory=list, description="Recipient interests")
+    occasion: Optional[str] = Field(None, description="Gift occasion (birthday, anniversary, festive)")
+    safe_sizes_only: bool = Field(False, description="Prefer size-free items like accessories")
+    preferred_brands: Optional[List[str]] = Field(default_factory=list, description="Preferred brands")
 
     model_config = {
         "json_schema_extra": {
@@ -161,6 +170,13 @@ class Product(BaseModel):
     rating: float
     in_stock: bool
     personalized_reason: str
+    
+    # Optional fields for gifting mode
+    gift_message: Optional[str] = None
+    gift_suitability: Optional[str] = None
+    
+    # Optional field for trendseer mode
+    trend_capsule: Optional[bool] = None
 
 
 class RecommendationResponse(BaseModel):
@@ -231,33 +247,18 @@ def filter_products_by_intent(
     target_gender = intent.get('gender', '').lower() if intent.get('gender') else customer_profile.get('gender', '').lower()
     
     if target_gender in ['male', 'female']:
-        # Check if products_df has a direct 'gender' column
-        if 'gender' in filtered.columns:
+        # Use word boundaries to prevent 'men' from matching in 'women'
+        if target_gender == 'male':
+            # For male: must contain men/man/boys/men's, must NOT contain women/woman/girls/women's
             filtered = filtered[
-                filtered['gender'].str.lower().isin([target_gender, 'unisex', 'boys', 'girls']) |
-                filtered['gender'].isna()
+                (filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
             ]
-            # Also filter by gender in product name if no gender column match
-            if filtered.empty:
-                gender_keywords = {
-                    'male': ['men', 'man', 'male', 'boys'],
-                    'female': ['women', 'woman', 'female', 'girls']
-                }
-                keywords = gender_keywords.get(target_gender, [])
-                pattern = '|'.join(keywords)
-                filtered = products_df[
-                    products_df['ProductDisplayName'].str.contains(pattern, case=False, na=False)
-                ]
-        else:
-            # Fallback: filter by product name keywords
-            gender_keywords = {
-                'male': ['men', 'man', 'male', 'boys'],
-                'female': ['women', 'woman', 'female', 'girls']
-            }
-            keywords = gender_keywords.get(target_gender, [])
-            pattern = '|'.join(keywords)
+        else:  # female
+            # For female: must contain women/woman/girls/women's, must NOT contain men/man/boys/men's
             filtered = filtered[
-                filtered['ProductDisplayName'].str.contains(pattern, case=False, na=False)
+                (filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True))
             ]
     
     # Filter by category
@@ -532,6 +533,350 @@ def get_cross_sell_product(
 
 
 # ==========================================
+# 3-MODE RECOMMENDATION LOGIC
+# ==========================================
+
+async def _mode_normal(request: RecommendationRequest, customer_profile: Dict, past_skus: List[str]) -> List[Dict]:
+    """MODE 1: Normal Recommendation - casual shopping, category browsing"""
+    
+    target_gender = request.intent.get('gender', '').lower() if request.intent.get('gender') else customer_profile.get('gender', '').lower()
+    
+    # Filter and rank
+    filtered = filter_products_by_intent(request.intent, customer_profile)
+    if filtered.empty:
+        filtered = products_df[products_df['ratings'] >= 4.5].copy()
+    
+    ranked = rank_products(filtered, customer_profile, past_skus)
+    
+    # Build recommendations with unique LLM reasons
+    recommendations = []
+    for _, product in ranked.head(request.limit * 3).iterrows():
+        if len(recommendations) >= request.limit:
+            break
+        
+        if not get_inventory_availability(product['sku']):
+            continue
+        
+        # Generate UNIQUE personalized reason via LLM
+        reason = generate_personalized_reason(
+            product, customer_profile, past_skus,
+            context="recommendation",
+            target_gender=target_gender
+        )
+        
+        recommendations.append({
+            'sku': product['sku'],
+            'name': product['ProductDisplayName'],
+            'brand': product['brand'],
+            'category': product['category'],
+            'subcategory': product['subcategory'],
+            'price': float(product['price']),
+            'rating': float(product['ratings']),
+            'in_stock': True,
+            'personalized_reason': reason
+        })
+    
+    return recommendations
+
+
+async def _mode_gifting_genius(request: RecommendationRequest, customer_profile: Dict, past_skus: List[str]) -> List[Dict]:
+    """MODE 2: Gifting Genius - emotion + context driven gifting"""
+    
+    recipient_gender = (request.recipient_gender or request.intent.get('gender', '')).lower()
+    relation = request.recipient_relation or 'someone special'
+    occasion = request.occasion or request.intent.get('occasion', 'gift')
+    interests = request.interests or []
+    
+    logger.info(f"   🎁 Gift recipient: {relation} ({recipient_gender})")
+    
+    # Filter by recipient gender (NOT buyer gender)
+    filtered = products_df.copy()
+    
+    if recipient_gender in ['male', 'female']:
+        # Define keywords for matching and exclusion with word boundaries
+        if recipient_gender == 'male':
+            # For male: must contain men/man/boys/men's, must NOT contain women/woman/girls/women's
+            filtered = filtered[
+                (filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
+            ]
+        else:  # female
+            # For female: must contain women/woman/girls/women's, must NOT contain men/man/boys/men's
+            filtered = filtered[
+                (filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True))
+            ]
+        
+        logger.info(f"   Filtered to {len(filtered)} gender-appropriate gift products")
+    
+    # Prefer size-free items
+    if request.safe_sizes_only:
+        size_free = filtered[filtered['category'].isin(['Accessories', 'Personal Care', 'Free Gifts'])]
+        if not size_free.empty:
+            filtered = size_free
+    
+    # Budget filter
+    budget_min = request.intent.get('budget_min', 0)
+    budget_max = request.intent.get('budget_max', 999999)
+    filtered = filtered[(filtered['price'] >= budget_min) & (filtered['price'] <= budget_max)]
+    
+    # Brand filter
+    if request.preferred_brands:
+        brand_match = filtered[filtered['brand'].isin(request.preferred_brands)]
+        if not brand_match.empty:
+            filtered = brand_match
+    
+    # Interest matching
+    if interests:
+        scores = []
+        for _, product in filtered.iterrows():
+            score = sum(10 for interest in interests if interest.lower() in str(product['ProductDisplayName']).lower())
+            scores.append(score)
+        filtered['interest_score'] = scores
+        filtered = filtered[filtered['interest_score'] > 0].sort_values('interest_score', ascending=False)
+    
+    if filtered.empty:
+        filtered = products_df[(products_df['ratings'] >= 4.5) & 
+                               (products_df['price'] >= budget_min) & 
+                               (products_df['price'] <= budget_max)]
+    
+    filtered = filtered.sort_values('ratings', ascending=False)
+    
+    # Build gift recommendations with UNIQUE LLM reasons
+    recommendations = []
+    for _, product in filtered.head(request.limit * 2).iterrows():
+        if len(recommendations) >= request.limit:
+            break
+        
+        if not get_inventory_availability(product['sku']):
+            continue
+        
+        # Generate TWO LLM responses: appropriateness reason + heartfelt message
+        if llm_client:
+            try:
+                interests_text = ', '.join(interests) if interests else 'thoughtful gestures'
+                
+                # 1. Generate appropriateness reasoning (personalized_reason)
+                reason_prompt = f"""You are a gift advisor. Explain in 1-2 sentences why this gift is appropriate for the recipient.
+
+Gift Context:
+- Recipient: Your {relation} ({recipient_gender})
+- Interests: {interests_text}
+- Occasion: {occasion}
+
+Product:
+- {product['ProductDisplayName']}
+- {product['brand']} {product['subcategory']}
+- ₹{product['price']}, {product['ratings']}⭐
+
+Explain why this specific product is a fitting choice for this person and occasion. Focus on appropriateness, not emotion."""
+
+                if LLM_PROVIDER == "gemini":
+                    response = llm_client.generate_content(reason_prompt)
+                    gift_reason = response.text.strip()
+                elif LLM_PROVIDER == "groq":
+                    response = llm_client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[{"role": "user", "content": reason_prompt}],
+                        temperature=0.7,
+                        max_tokens=100
+                    )
+                    gift_reason = response.choices[0].message.content.strip()
+                
+                # 2. Generate heartfelt gift message (gift_message)
+                message_prompt = f"""You are writing a heartfelt gift card message. Write a warm, personal message (1-2 sentences) for this gift.
+
+Gift Context:
+- Recipient: Your {relation}
+- Occasion: {occasion}
+- Product: {product['ProductDisplayName']} from {product['brand']}
+
+Write a genuine, emotional message that the giver would write on a gift card. Be loving and heartfelt, not generic."""
+
+                if LLM_PROVIDER == "gemini":
+                    response = llm_client.generate_content(message_prompt)
+                    gift_message = response.text.strip()
+                elif LLM_PROVIDER == "groq":
+                    response = llm_client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[{"role": "user", "content": message_prompt}],
+                        temperature=0.9,
+                        max_tokens=80
+                    )
+                    gift_message = response.choices[0].message.content.strip()
+                    
+            except Exception as e:
+                logger.warning(f"Gift LLM failed: {e}")
+                gift_reason = f"This {product['subcategory']} is perfect for your {relation} — matches their style and the {occasion} occasion."
+                gift_message = f"Happy {occasion.title()}! Hope you love this {product['brand']} gift!"
+        else:
+            gift_reason = f"A wonderful {occasion} gift for your {relation}."
+            gift_message = f"Happy {occasion.title()}! Enjoy this special gift."
+        
+        # Suitability tag
+        suitability = {'birthday': 'Birthday', 'anniversary': 'Anniversary', 'festive': 'Festive'}.get(occasion, 'General Gift')
+        
+        recommendations.append({
+            'sku': product['sku'],
+            'name': product['ProductDisplayName'],
+            'brand': product['brand'],
+            'category': product['category'],
+            'subcategory': product['subcategory'],
+            'price': float(product['price']),
+            'rating': float(product['ratings']),
+            'in_stock': True,
+            'personalized_reason': gift_reason,
+            'gift_message': gift_message,
+            'gift_suitability': suitability
+        })
+    
+    return recommendations
+
+
+async def _mode_trendseer(request: RecommendationRequest, customer_profile: Dict, past_skus: List[str]) -> List[Dict]:
+    """MODE 3: TrendSeer - predictive fashion oracle"""
+    
+    past_products = products_df[products_df['sku'].isin(past_skus)]
+    
+    if past_products.empty:
+        logger.warning("   No purchase history for trendseer, using normal mode")
+        return await _mode_normal(request, customer_profile, past_skus)
+    
+    # Get buyer's gender for personal purchases
+    buyer_gender = customer_profile.get('gender', '').lower()
+    logger.info(f"   🔮 Predicting for buyer gender: {buyer_gender}")
+    
+    # Build style profile
+    fav_brands = past_products['brand'].value_counts().head(3).index.tolist()
+    fav_categories = past_products['category'].value_counts().head(2).index.tolist()
+    avg_spend = past_products['price'].mean()
+    
+    # Extract colors
+    color_keywords = ['black', 'white', 'blue', 'red', 'navy', 'grey', 'pink', 'yellow', 'pastel']
+    fav_colors = []
+    for _, prod in past_products.iterrows():
+        name_lower = str(prod['ProductDisplayName']).lower()
+        for color in color_keywords:
+            if color in name_lower:
+                fav_colors.append(color)
+    
+    from collections import Counter
+    if fav_colors:
+        fav_colors = [c for c, _ in Counter(fav_colors).most_common(2)]
+    
+    # Detect trending SKUs
+    recent_orders = orders_df.sort_values('order_date', ascending=False).head(200)
+    trending_skus = recent_orders['product_sku'].value_counts().head(50).index.tolist()
+    trending = products_df[products_df['sku'].isin(trending_skus)]
+    
+    # Filter by buyer's gender first (for their own purchases)
+    if buyer_gender in ['male', 'female']:
+        # Define keywords with word boundaries to prevent 'men' matching in 'women'
+        if buyer_gender == 'male':
+            # For male: must contain men/man/boys/men's, must NOT contain women/woman/girls/women's
+            trending = trending[
+                (trending['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
+                (~trending['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
+            ]
+        else:  # female
+            # For female: must contain women/woman/girls/women's, must NOT contain men/man/boys/men's
+            trending = trending[
+                (trending['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
+                (~trending['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True))
+            ]
+        
+        logger.info(f"   Filtered to {len(trending)} gender-appropriate trending products")
+    
+    # Match style
+    filtered = trending[
+        (trending['brand'].isin(fav_brands)) |
+        (trending['category'].isin(fav_categories))
+    ]
+    
+    filtered = filtered[
+        (filtered['price'] >= avg_spend * 0.7) &
+        (filtered['price'] <= avg_spend * 1.5)
+    ]
+    
+    # Color matching
+    if fav_colors:
+        color_pattern = '|'.join(fav_colors)
+        color_match = filtered[
+            filtered['ProductDisplayName'].str.contains(color_pattern, case=False, na=False)
+        ]
+        if not color_match.empty:
+            filtered = color_match
+    
+    # If no matches after filters, use ALL gender-filtered trending (not unfiltered)
+    if filtered.empty:
+        filtered = trending[trending['category'].isin(fav_categories)]
+        if filtered.empty:
+            # Last resort: use any gender-appropriate trending products
+            filtered = trending
+    
+    filtered = filtered.sort_values('ratings', ascending=False)
+    
+    # Build UNIQUE predictive recommendations
+    recommendations = []
+    for _, product in filtered.head(request.limit * 2).iterrows():
+        if len(recommendations) >= request.limit:
+            break
+        
+        if not get_inventory_availability(product['sku']):
+            continue
+        
+        # Generate UNIQUE predictive reason via LLM
+        if llm_client:
+            try:
+                prompt = f"""You are a proactive personal stylist. Create a predictive recommendation (1-2 sentences).
+
+Customer Style Profile:
+- Favorite Brands: {', '.join(fav_brands[:2])}
+- Favorite Categories: {', '.join(fav_categories)}
+- Favorite Colors: {', '.join(fav_colors) if fav_colors else 'various'}
+- Average Spend: ₹{avg_spend:.0f}
+
+Trending Product:
+- {product['ProductDisplayName']}
+- {product['brand']} {product['subcategory']}
+- ₹{product['price']}, {product['ratings']}⭐
+
+Explain why they'll likely need this next based on their style. Be specific and predictive."""
+
+                if LLM_PROVIDER == "gemini":
+                    response = llm_client.generate_content(prompt)
+                    predictive_reason = response.text.strip()
+                elif LLM_PROVIDER == "groq":
+                    response = llm_client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.9,
+                        max_tokens=120
+                    )
+                    predictive_reason = response.choices[0].message.content.strip()
+            except Exception as e:
+                logger.warning(f"Trendseer LLM failed: {e}")
+                predictive_reason = f"Trending now and matches your {fav_brands[0] if fav_brands else 'favorite'} style."
+        else:
+            predictive_reason = f"Trending this month, matches your preferences."
+        
+        recommendations.append({
+            'sku': product['sku'],
+            'name': product['ProductDisplayName'],
+            'brand': product['brand'],
+            'category': product['category'],
+            'subcategory': product['subcategory'],
+            'price': float(product['price']),
+            'rating': float(product['ratings']),
+            'in_stock': True,
+            'personalized_reason': predictive_reason,
+            'trend_capsule': True
+        })
+    
+    return recommendations
+
+
+# ==========================================
 # API ENDPOINTS
 # ==========================================
 
@@ -541,7 +886,7 @@ async def root():
     return {
         "status": "running",
         "service": "Recommendation Agent",
-        "version": "1.0.0",
+        "version": "2.0.0 (3-Mode Intelligent Agent)",
         "products_loaded": len(products_df),
         "customers_loaded": len(customers_df)
     }
@@ -550,10 +895,10 @@ async def root():
 @app.post("/recommend", response_model=RecommendationResponse)
 async def get_recommendations(request: RecommendationRequest):
     """
-    Generate personalized product recommendations
-    
-    This endpoint uses customer profile, purchase history, and intent
-    to provide intelligent, personalized recommendations with human-like reasoning.
+    Generate personalized product recommendations with 3 modes:
+    - normal: Regular shopping recommendations
+    - gifting_genius: Emotion-driven gift recommendations
+    - trendseer: Predictive fashion AI
     """
     
     logger.info(f"📊 Processing recommendation request for customer: {request.customer_id}")
@@ -570,139 +915,49 @@ async def get_recommendations(request: RecommendationRequest):
     # Get past purchases
     past_skus = get_past_purchase_skus(customer_profile)
     logger.info(f"   Past purchases: {len(past_skus)} items")
+    logger.info(f"   Mode: {request.mode}")
     
-    # Determine target gender (from intent or customer profile)
-    target_gender = request.intent.get('gender', customer_profile.get('gender', ''))
-    is_gift = request.intent.get('gender') and request.intent.get('gender').lower() != customer_profile.get('gender', '').lower()
+    # ==========================================
+    # MODE ROUTING
+    # ==========================================
     
-    if is_gift:
-        logger.info(f"   🎁 Gift mode: Customer is {customer_profile.get('gender', 'N/A')}, looking for {target_gender} products")
-    
-    # Filter products by intent
-    filtered_products = filter_products_by_intent(request.intent, customer_profile)
-    logger.info(f"   Filtered to: {len(filtered_products)} products")
-    
-    # Handle empty results - fallback to trending
-    if filtered_products.empty:
-        logger.warning("   No products match filters, using trending items")
-        filtered_products = products_df[products_df['ratings'] >= 4.5].copy()
-    
-    # Rank products
-    ranked_products = rank_products(filtered_products, customer_profile, past_skus)
-    
-    # Check inventory and filter in-stock items
-    top_products = ranked_products.head(request.limit * 3)  # Get extra for filtering
     in_stock_products = []
     
-    for _, product in top_products.iterrows():
-        if len(in_stock_products) >= request.limit:
-            break
+    if request.mode == "gifting_genius":
+        logger.info("   🎁 GIFTING GENIUS MODE activated")
+        in_stock_products = await _mode_gifting_genius(request, customer_profile, past_skus)
         
-        is_available = get_inventory_availability(product['sku'])
+    elif request.mode == "trendseer":
+        logger.info("   🔮 TRENDSEER MODE activated")
+        in_stock_products = await _mode_trendseer(request, customer_profile, past_skus)
         
-        if is_available or len(in_stock_products) < request.limit // 2:
-            in_stock_products.append({
-                'sku': product['sku'],
-                'name': product['ProductDisplayName'],
-                'brand': product['brand'],
-                'category': product['category'],
-                'subcategory': product['subcategory'],
-                'price': float(product['price']),
-                'rating': float(product['ratings']),
-                'in_stock': is_available,
-                'personalized_reason': generate_personalized_reason(
-                    product, customer_profile, past_skus,
-                    context="recommendation",
-                    target_gender=target_gender
-                )
-            })
+    else:  # normal mode
+        logger.info("   👤 NORMAL MODE activated")
+        in_stock_products = await _mode_normal(request, customer_profile, past_skus)
     
-    # Get price range for recommendations
-    if in_stock_products:
-        prices = [p['price'] for p in in_stock_products]
-        price_range = (min(prices), max(prices))
-    else:
-        price_range = (0, 10000)
-    
-    # Generate upsell
-    upsell = get_upsell_product(
-        ranked_products,
-        customer_profile,
-        past_skus,
-        price_range
-    )
-    
-    # Generate cross-sell
-    cross_sell = get_cross_sell_product(
-        request.current_cart_skus,
-        customer_profile,
-        past_skus
-    )
-    
-    # Generate overall reasoning with LLM
+    # Generate overall reasoning
     name = customer_profile.get('name', 'Customer').split()[0]
     loyalty_tier = customer_profile.get('loyalty_tier', 'Bronze')
-    age = customer_profile.get('age', 'N/A')
     
-    if llm_client:
-        try:
-            # Get product names for context
-            product_names = [p['name'] for p in in_stock_products[:3]]
-            
-            prompt = f"""You are a warm, friendly shopping assistant. Write a brief, personalized greeting and introduction (2-3 sentences max) for recommendations.
-
-Customer: {name}, Age {age}, {loyalty_tier} tier member
-Has {len(past_skus)} past purchases
-Recommending {len(in_stock_products)} products: {', '.join(product_names)}
-{f"For {request.intent.get('occasion')} occasion" if request.intent.get('occasion') else ""}
-
-Write a warm, conversational introduction that:
-1. Greets {name} personally
-2. Mentions their loyalty tier naturally
-3. Hints at why these picks are special for them
-4. Sounds like a helpful friend, not a salesperson
-
-Keep it brief, warm, and genuine."""
-
-            if LLM_PROVIDER == "gemini":
-                response = llm_client.generate_content(prompt)
-                reasoning = response.text.strip()
-            elif LLM_PROVIDER == "groq":
-                response = llm_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.8,
-                    max_tokens=200
-                )
-                reasoning = response.choices[0].message.content.strip()
-        
-        except Exception as e:
-            logger.warning(f"LLM generation failed for overall reasoning: {e}")
-            reasoning = f"Hi {name}! As a {loyalty_tier} member, I've curated these {len(in_stock_products)} picks just for you!"
-    else:
-        # Fallback template
-        reasoning = f"Hi {name}! As a {loyalty_tier} member with a taste for quality, "
-        
-        if past_skus:
-            reasoning += f"I've curated these {len(in_stock_products)} recommendations based on your past purchases and preferences. "
-        else:
-            reasoning += f"I've selected these {len(in_stock_products)} trending items that match your style profile. "
-        
-        if request.intent.get('occasion'):
-            reasoning += f"They're perfect for {request.intent['occasion']} occasions. "
-        
-        reasoning += "Each pick is specially chosen with you in mind!"
+    mode_descriptions = {
+        'gifting_genius': f"I've found {len(in_stock_products)} perfect gift options",
+        'trendseer': f"Here are {len(in_stock_products)} trending picks that match your style",
+        'normal': f"I've curated {len(in_stock_products)} recommendations just for you"
+    }
+    
+    reasoning = f"Hi {name}! As a {loyalty_tier} member, {mode_descriptions.get(request.mode, mode_descriptions['normal'])}!"
     
     logger.info(f"✅ Generated {len(in_stock_products)} recommendations")
     
     return RecommendationResponse(
         recommended_products=in_stock_products,
-        upsell=upsell,
-        cross_sell=cross_sell,
+        upsell=None,  # Modes handle recommendations directly
+        cross_sell=None,
         personalized_reasoning=reasoning,
         metadata={
             "customer_id": request.customer_id,
             "loyalty_tier": loyalty_tier,
+            "mode": request.mode,
             "past_purchases_count": len(past_skus),
             "intent": request.intent,
             "timestamp": datetime.utcnow().isoformat()
@@ -721,4 +976,4 @@ if __name__ == "__main__":
         port=8004,
         reload=True,
         log_level="info"
-    )
+)
