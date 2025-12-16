@@ -1,0 +1,31 @@
+# Requirements for Ambient Commerce Integrator Agent
+
+# Core Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# Deep Learning - PyTorch
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Image Processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Vector Search
+faiss-cpu>=1.7.4
+# Use faiss-gpu for GPU acceleration:
+# faiss-gpu>=1.7.4
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Caching (Optional but recommended)
+redis>=5.0.0
+
+# HTTP Client (for testing)
+httpx>=0.25.0
+requests>=2.31.0
