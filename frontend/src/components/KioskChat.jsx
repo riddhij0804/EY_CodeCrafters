@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Send, Mic, MicOff, Package, MapPin, User, ShoppingBag, X } from 'lucide-react';
 
 const SESSION_API = 'http://localhost:8000';
+const SALES_API = 'http://localhost:8010';
 
 const KioskChat = () => {
   // Session state
@@ -192,25 +193,35 @@ const KioskChat = () => {
     await saveChatMessage('user', messageText);
 
     // Show typing indicator
-    setTimeout(() => {
-      setIsTyping(true);
-    }, 800);
+    setIsTyping(true);
 
-    // Mock bot response after 1.5-2 seconds
-    setTimeout(async () => {
+    // Call Sales Agent API
+    try {
+      const payload = {
+        message: messageText,
+        session_token: sessionToken,
+        metadata: { user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone }
+      };
+
+      const resp = await fetch(`${SALES_API}/api/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
       setIsTyping(false);
-      const mockBotResponses = [
-        "I'd be happy to help you with that. Let me check our latest collection for you.",
-        "That's a great choice! We have several options that match your preference.",
-        "Our premium collection features top brands like Van Heusen, Allen Solly, and Louis Philippe.",
-        "Would you like to see items available in your size and preferred color?",
-        "I can help you find the perfect match. What's your budget range?",
-        "Excellent! Let me find the best options for you from our in-store inventory."
-      ];
-      const randomResponse = mockBotResponses[Math.floor(Math.random() * mockBotResponses.length)];
+
+      if (!resp.ok) throw new Error('Agent error');
+
+      const data = await resp.json();
+      const botText = data.reply || 'Sorry, I could not process that.';
+
+      // Update session token if returned
+      if (data.session_token) setSessionToken(data.session_token);
+
       const botMessage = {
         id: Date.now() + 1,
-        text: randomResponse,
+        text: botText,
         sender: 'bot',
         timestamp: new Date().toLocaleTimeString('en-US', { 
           hour: '2-digit', 
@@ -218,9 +229,25 @@ const KioskChat = () => {
           hour12: true 
         })
       };
+
       setMessages(prev => [...prev, botMessage]);
-      await saveChatMessage('bot', randomResponse);
-    }, 2000);
+      await saveChatMessage('bot', botText);
+    } catch (error) {
+      setIsTyping(false);
+      console.error('Agent call failed:', error);
+      const failMsg = {
+        id: Date.now() + 2,
+        text: 'Sorry, I could not reach the assistant. Please try again later.',
+        sender: 'bot',
+        timestamp: new Date().toLocaleTimeString('en-US', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        })
+      };
+      setMessages(prev => [...prev, failMsg]);
+      await saveChatMessage('bot', failMsg.text);
+    }
   };
 
   const handleKeyPress = (e) => {

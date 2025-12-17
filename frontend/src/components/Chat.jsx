@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Send, Check, CheckCheck, Phone, Video, MoreVertical, Mic, MicOff, User, X } from 'lucide-react';
 
 const SESSION_API = 'http://localhost:8000';
+const SALES_API = 'http://localhost:8010';
 
 const Chat = () => {
   // Session state
@@ -197,33 +198,55 @@ const Chat = () => {
     }, 1000);
 
     // Show typing indicator
-    setTimeout(() => {
-      setIsTyping(true);
-    }, 1200);
+    setIsTyping(true);
 
-    // Mock agent response after 1-1.5 seconds
-    setTimeout(async () => {
+    // Call Sales Agent API
+    try {
+      const payload = {
+        message: messageText,
+        session_token: sessionToken,
+        metadata: { user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone }
+      };
+
+      const resp = await fetch(`${SALES_API}/api/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
       setIsTyping(false);
-      const mockAgentResponses = [
-        "Sure! Let me check the best options for you.",
-        "I found some great products that match your preferences!",
-        "Would you like me to show you our top recommendations?",
-        "I can help you with that. What's your budget?",
-        "Great choice! Let me find similar items for you.",
-        "I'm checking our inventory for you...",
-        "Based on your preferences, I have some perfect options!"
-      ];
-      const randomResponse = mockAgentResponses[Math.floor(Math.random() * mockAgentResponses.length)];
+
+      if (!resp.ok) throw new Error('Agent error');
+
+      const data = await resp.json();
+      const agentText = data.reply || 'Sorry, I could not process that.';
+
+      // Update session token if returned
+      if (data.session_token) setSessionToken(data.session_token);
+
       const agentMessage = {
         id: Date.now() + 1,
-        text: randomResponse,
+        text: agentText,
         sender: 'agent',
         timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
         status: 'read'
       };
+
       setMessages(prev => [...prev, agentMessage]);
-      await saveChatMessage('agent', randomResponse);
-    }, 1500);
+      await saveChatMessage('agent', agentText);
+    } catch (error) {
+      setIsTyping(false);
+      console.error('Agent call failed:', error);
+      const failMsg = {
+        id: Date.now() + 2,
+        text: 'Sorry, I could not reach the agent. Please try again later.',
+        sender: 'agent',
+        timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+        status: 'read'
+      };
+      setMessages(prev => [...prev, failMsg]);
+      await saveChatMessage('agent', failMsg.text);
+    }
   };
 
   const handleKeyPress = (e) => {

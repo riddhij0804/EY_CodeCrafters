@@ -283,6 +283,18 @@ def update_session_state(token: str, action: str, payload: Dict[str, Any]) -> Di
     else:
         # Unknown action type -> client error
         logger.error(f"Unknown action attempted: {action}")
+        # Support a lightweight 'set_user' action to set user_id on the session
+        if action == "set_user":
+            user_id = payload.get("user_id")
+            if not user_id:
+                raise HTTPException(status_code=400, detail="'user_id' is required for set_user action")
+
+            session["user_id"] = user_id
+            session["updated_at"] = _now_iso()
+            SESSIONS[token] = session
+            logger.info(f"Set user_id for token={token}: {user_id}")
+            return session
+
         raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
 
     # Update the session-level timestamp to reflect mutation
