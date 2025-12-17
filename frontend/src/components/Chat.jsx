@@ -1,22 +1,111 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Check, CheckCheck, Phone, Video, MoreVertical, Mic, MicOff } from 'lucide-react';
+import { Send, Check, CheckCheck, Phone, Video, MoreVertical, Mic, MicOff, User, X } from 'lucide-react';
+
+const SESSION_API = 'http://localhost:8000';
 
 const Chat = () => {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      text: "Hello! I'm your AI Sales Agent. How can I help you today?",
-      sender: 'agent',
-      timestamp: new Date(Date.now() - 120000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-      status: 'read'
-    }
-  ]);
+  // Session state
+  const [sessionInfo, setSessionInfo] = useState(null);
+  const [sessionToken, setSessionToken] = useState(null);
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [showPhoneInput, setShowPhoneInput] = useState(true);
+  const [isLoadingSession, setIsLoadingSession] = useState(false);
+
+  const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const messagesEndRef = useRef(null);
   const recognitionRef = useRef(null);
   const transcriptRef = useRef('');
+
+  // Session Management Functions
+  const startOrRestoreSession = async (phone) => {
+    setIsLoadingSession(true);
+    try {
+      const response = await fetch(`${SESSION_API}/session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: phone,
+          channel: 'whatsapp'
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to start session');
+
+      const data = await response.json();
+      setSessionToken(data.session_token);
+      setSessionInfo(data.session);
+      setShowPhoneInput(false);
+
+      // Load chat history from session
+      if (data.session.data.chat_context && data.session.data.chat_context.length > 0) {
+        const chatMessages = data.session.data.chat_context.map((msg, idx) => ({
+          id: idx + 1,
+          text: msg.message,
+          sender: msg.sender === 'user' ? 'user' : 'agent',
+          timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          status: 'read'
+        }));
+        setMessages(chatMessages);
+      } else {
+        // Initial greeting
+        setMessages([{
+          id: 1,
+          text: "Hello! I'm your AI Sales Agent. How can I help you today?",
+          sender: 'agent',
+          timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          status: 'read'
+        }]);
+      }
+    } catch (error) {
+      console.error('Session error:', error);
+      alert('Failed to start session. Please try again.');
+    } finally {
+      setIsLoadingSession(false);
+    }
+  };
+
+  const endSession = async () => {
+    if (!sessionToken) return;
+
+    try {
+      await fetch(`${SESSION_API}/session/end`, {
+        method: 'POST',
+        headers: { 'X-Session-Token': sessionToken }
+      });
+
+      // Reset UI
+      setSessionInfo(null);
+      setSessionToken(null);
+      setMessages([]);
+      setShowPhoneInput(true);
+      setPhoneNumber('');
+    } catch (error) {
+      console.error('End session error:', error);
+    }
+  };
+
+  const saveChatMessage = async (sender, message) => {
+    if (!sessionToken) return;
+
+    try {
+      await fetch(`${SESSION_API}/session/update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Token': sessionToken
+        },
+        body: JSON.stringify({
+          action: 'chat_message',
+          payload: { sender, message }
+        })
+      });
+    } catch (error) {
+      console.error('Failed to save chat message:', error);
+    }
+  };
 
   // Auto-scroll to bottom when messages change
   const scrollToBottom = () => {
@@ -74,20 +163,25 @@ const Chat = () => {
     "Based on your preferences, I have some perfect options!"
   ];
 
-  const handleSendMessage = () => {
-    if (!inputText.trim()) return;
+  const handleSendMessage = async () => {
+    if (!inputText.trim() || !sessionToken) return;
+
+    const messageText = inputText;
+    setInputText('');
 
     // Add user message
     const userMessage = {
       id: Date.now(),
-      text: inputText,
+      text: messageText,
       sender: 'user',
       timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
       status: 'sent'
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setInputText('');
+
+    // Save to backend
+    await saveChatMessage('user', messageText);
 
     // Simulate message status updates (sent → delivered → read)
     setTimeout(() => {
@@ -108,8 +202,17 @@ const Chat = () => {
     }, 1200);
 
     // Mock agent response after 1-1.5 seconds
-    setTimeout(() => {
+    setTimeout(async () => {
       setIsTyping(false);
+      const mockAgentResponses = [
+        "Sure! Let me check the best options for you.",
+        "I found some great products that match your preferences!",
+        "Would you like me to show you our top recommendations?",
+        "I can help you with that. What's your budget?",
+        "Great choice! Let me find similar items for you.",
+        "I'm checking our inventory for you...",
+        "Based on your preferences, I have some perfect options!"
+      ];
       const randomResponse = mockAgentResponses[Math.floor(Math.random() * mockAgentResponses.length)];
       const agentMessage = {
         id: Date.now() + 1,
@@ -119,6 +222,7 @@ const Chat = () => {
         status: 'read'
       };
       setMessages(prev => [...prev, agentMessage]);
+      await saveChatMessage('agent', randomResponse);
     }, 1500);
   };
 
@@ -159,6 +263,49 @@ const Chat = () => {
     }
   };
 
+  // Phone Input Modal
+  if (showPhoneInput) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-[#efeae2]">
+        <div className="bg-white rounded-lg shadow-2xl p-8 max-w-md w-full mx-4">
+          <div className="text-center mb-6">
+            <div className="w-20 h-20 bg-[#25d366] rounded-full flex items-center justify-center mx-auto mb-4">
+              <Phone className="w-10 h-10 text-white" />
+            </div>
+            <h2 className="text-2xl font-bold text-[#008069] mb-2">WhatsApp Chat</h2>
+            <p className="text-gray-600">Enter your phone number to start or continue your session</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
+              <input
+                type="tel"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                placeholder="+91 98765 43210"
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-[#25d366] focus:outline-none text-lg"
+                onKeyPress={(e) => e.key === 'Enter' && !isLoadingSession && phoneNumber.trim() && startOrRestoreSession(phoneNumber)}
+              />
+            </div>
+            
+            <button
+              onClick={() => startOrRestoreSession(phoneNumber)}
+              disabled={isLoadingSession || !phoneNumber.trim()}
+              className="w-full bg-[#25d366] text-white py-3 rounded-lg font-semibold hover:bg-[#20bd5a] disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            >
+              {isLoadingSession ? 'Connecting...' : 'Start Chat'}
+            </button>
+            
+            <p className="text-xs text-gray-500 text-center">
+              Your session stays active and is reusable across WhatsApp and Kiosk.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen bg-[#efeae2]">
       {/* Header - WhatsApp style */}
@@ -182,11 +329,44 @@ const Chat = () => {
           <button className="hover:bg-[#017561] p-2 rounded-full transition-colors">
             <Phone className="w-5 h-5" />
           </button>
-          <button className="hover:bg-[#017561] p-2 rounded-full transition-colors">
-            <MoreVertical className="w-5 h-5" />
+          <button 
+            onClick={endSession}
+            className="hover:bg-[#c0392b] p-2 rounded-full transition-colors"
+            title="End Session"
+          >
+            <X className="w-5 h-5" />
           </button>
         </div>
       </div>
+
+      {/* Session Continuity Banner */}
+      {sessionInfo && (
+        <div className="bg-gradient-to-r from-[#dcf8c6] to-[#d0f4de] border-b-2 border-[#25d366] px-4 py-3 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-2 bg-[#25d366] rounded-full animate-pulse"></div>
+              <div className="text-sm">
+                <span className="font-semibold text-[#075e54]">Session Active:</span>
+                <span className="ml-2 text-[#128c7e] font-mono text-xs">{sessionInfo.session_id}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-xs text-[#075e54]">
+              <div className="flex items-center gap-1">
+                <User className="w-3 h-3" />
+                <span className="font-medium">{sessionInfo.phone}</span>
+              </div>
+              <div className="px-2 py-1 bg-white/50 rounded-full">
+                <span className="font-semibold">📱 WhatsApp</span>
+              </div>
+              {sessionInfo.data?.chat_context?.length > 1 && (
+                <div className="text-[#00796b] font-medium">
+                  ↻ Session restored ({sessionInfo.data.chat_context.length} messages)
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Chat Messages Area */}
       <div 

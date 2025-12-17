@@ -31,9 +31,27 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Session Manager", version="1.0.0")
 
+# Add CORS middleware for frontend integration
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # In-memory session store (mapping session_token -> session dict)
 # This satisfies the "no database" requirement; all data is lost on process restart.
 SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+# Phone-based mappings
+# phone_number -> session_token (for quick lookup)
+PHONE_SESSIONS: Dict[str, str] = {}
+# phone_number -> persistent session_id (ensures one ID per phone across channels)
+PHONE_SESSION_IDS: Dict[str, str] = {}
+
+# No expiry: sessions remain active unless explicitly ended
 
 # -----------------------------
 # Pydantic models for requests
@@ -42,8 +60,10 @@ SESSIONS: Dict[str, Dict[str, Any]] = {}
 class StartSessionRequest(BaseModel):
     """Request model for starting a session.
 
-    Optional `user_id` can be provided; if omitted it will be `null` (None).
+    Requires phone number for session continuity across channels.
     """
+    phone: str = Field(..., description="Phone number as primary identifier")
+    channel: str = Field(default="whatsapp", description="Channel: whatsapp or kiosk")
     user_id: Optional[str] = Field(default=None, description="Optional user id to associate with session")
 
 
@@ -96,27 +116,52 @@ def generate_session_token() -> str:
     return token
 
 
-def create_session(user_id: Optional[str] = None) -> (str, Dict[str, Any]):
+def create_session(phone: str, channel: str = "whatsapp", user_id: Optional[str] = None) -> (str, Dict[str, Any]):
     """Create a new session object and store it in the in-memory store.
 
     The session schema follows the user's requirements:
-    - session_id: uuid
+    - session_id: uuid (persistent for the phone number)
+    - phone: phone number as primary identifier
+    - channel: whatsapp or kiosk
     - user_id: can be `None` initially
     - data: { cart: [], recent: [], chat_context: [], last_action: None }
-    - updated_at: timestamp
+    - created_at: session creation timestamp
+    - updated_at: last activity timestamp
+    - expires_at: 2 hours from creation
+    - is_active: session status
 
     Args:
+        phone: Phone number as primary identifier
+        channel: Channel type (whatsapp or kiosk)
         user_id: Optional user identifier to attach to the session.
 
     Returns:
         Tuple of (session_token, session_dict)
     """
+    # If phone already has a session token, restore it (no expiry)
+    existing_token = PHONE_SESSIONS.get(phone)
+    if existing_token and existing_token in SESSIONS:
+        existing_session = SESSIONS[existing_token]
+        existing_session["channel"] = channel
+        existing_session["is_active"] = True
+        existing_session["updated_at"] = _now_iso()
+        SESSIONS[existing_token] = existing_session
+        PHONE_SESSION_IDS[phone] = existing_session["session_id"]
+        logger.info(f"Restored session for phone={phone}, channel={channel}, session_id={existing_session['session_id']}")
+        return existing_token, existing_session
+
     # Generate the unique token used by clients to refer to this session
     token = generate_session_token()
 
+    # Persistent session_id per phone (create once and reuse forever)
+    session_id = PHONE_SESSION_IDS.get(phone) or str(uuid.uuid4())
+    PHONE_SESSION_IDS[phone] = session_id
+
     # Build the session payload with the required structure
     session = {
-        "session_id": str(uuid.uuid4()),  # unique id for the session
+        "session_id": session_id,  # persistent id for the phone
+        "phone": phone,  # primary identifier
+        "channel": channel,  # current channel
         "user_id": user_id,  # can be None
         "data": {
             "cart": [],  # list of cart items
@@ -124,14 +169,17 @@ def create_session(user_id: Optional[str] = None) -> (str, Dict[str, Any]):
             "chat_context": [],  # chat history between user and agent
             "last_action": None,  # track last action performed
         },
+        "created_at": _now_iso(),
         "updated_at": _now_iso(),  # timestamp for last update
+        "is_active": True,  # session status
     }
 
     # Store session in the global in-memory dict
     SESSIONS[token] = session
+    PHONE_SESSIONS[phone] = token
 
     # Log for visibility during development
-    logger.info(f"Created new session: token={token}, session_id={session['session_id']}")
+    logger.info(f"Created new session: token={token}, session_id={session['session_id']}, phone={phone}")
 
     return token, session
 
@@ -252,13 +300,14 @@ def update_session_state(token: str, action: str, payload: Dict[str, Any]) -> Di
 
 @app.post("/session/start", response_model=StartSessionResponse)
 async def session_start(request: StartSessionRequest):
-    """Start a new session and return its token and initial state.
+    """Start a new session or restore existing session for a phone number.
 
-    The endpoint accepts an optional `user_id` and returns the generated
-    `session_token` together with the full session object.
+    The endpoint accepts phone, channel, and optional user_id.
+    Returns the session_token and full session object.
+    If phone already has an active session, restores it with updated channel.
     """
-    # Create the session using helper; this stores it in-memory
-    token, session = create_session(user_id=request.user_id)
+    # Create or restore session using helper; this stores it in-memory
+    token, session = create_session(phone=request.phone, channel=request.channel, user_id=request.user_id)
 
     # Explicitly return a JSONResponse to ensure consistent JSON outputs
     return JSONResponse(status_code=200, content={"session_token": token, "session": session})
@@ -302,7 +351,35 @@ async def session_update(
     return JSONResponse(status_code=200, content={"session": updated_session})
 
 
+@app.post("/session/end")
+async def session_end(x_session_token: Optional[str] = Header(None, alias="X-Session-Token")):
+    """End a session by marking it as inactive.
+
+    The session_id persists, and the same phone can restore it later.
+    Session remains in memory for 2 hours but is marked inactive.
+    """
+    # Validate header presence
+    if not x_session_token:
+        raise HTTPException(status_code=400, detail="Missing X-Session-Token header")
+
+    # Retrieve the session
+    session = get_session(x_session_token)
+
+    # Mark session as inactive (but keep it restorable)
+    session["is_active"] = False
+    session["updated_at"] = _now_iso()
+    SESSIONS[x_session_token] = session
+
+    logger.info(f"Session ended: token={x_session_token}, session_id={session['session_id']}")
+
+    return JSONResponse(status_code=200, content={
+        "message": "Session ended successfully",
+        "session_id": session["session_id"],
+        "phone": session["phone"]
+    })
+
+
 # Allow this module to be executed directly for local development
 if __name__ == "__main__":
     # Run uvicorn with this module's `app` object
-    uvicorn.run("backend.session_manager:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run("backend.session_manager:app", host="0.0.0.0", port=8000, reload=True)

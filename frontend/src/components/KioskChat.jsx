@@ -1,33 +1,117 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Mic, MicOff, Package, MapPin, User, ShoppingBag } from 'lucide-react';
+import { Send, Mic, MicOff, Package, MapPin, User, ShoppingBag, X } from 'lucide-react';
+
+const SESSION_API = 'http://localhost:8000';
 
 const KioskChat = () => {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      text: "Welcome to Aditya Birla Fashion & Retail! I'm your in-store digital assistant. How may I help you today?",
-      sender: 'bot',
-      timestamp: '10:30 AM'
-    },
-    {
-      id: 2,
-      text: "I'm looking for casual shoes",
-      sender: 'user',
-      timestamp: '10:31 AM'
-    },
-    {
-      id: 3,
-      text: "Excellent choice! We have a wonderful collection of casual shoes from premium brands. Let me show you our top picks available in-store today.",
-      sender: 'bot',
-      timestamp: '10:31 AM'
-    }
-  ]);
+  // Session state
+  const [sessionInfo, setSessionInfo] = useState(null);
+  const [sessionToken, setSessionToken] = useState(null);
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [showPhoneInput, setShowPhoneInput] = useState(true);
+  const [isLoadingSession, setIsLoadingSession] = useState(false);
+
+  const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const messagesEndRef = useRef(null);
   const recognitionRef = useRef(null);
   const transcriptRef = useRef('');
+
+  // Session Management Functions
+  const startOrRestoreSession = async (phone) => {
+    setIsLoadingSession(true);
+    try {
+      const response = await fetch(`${SESSION_API}/session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: phone,
+          channel: 'kiosk'
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to start session');
+
+      const data = await response.json();
+      setSessionToken(data.session_token);
+      setSessionInfo(data.session);
+      setShowPhoneInput(false);
+
+      // Load chat history from session
+      if (data.session.data.chat_context && data.session.data.chat_context.length > 0) {
+        const chatMessages = data.session.data.chat_context.map((msg, idx) => ({
+          id: idx + 1,
+          text: msg.message,
+          sender: msg.sender === 'user' ? 'user' : 'bot',
+          timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: true 
+          })
+        }));
+        setMessages(chatMessages);
+      } else {
+        // Initial greeting
+        setMessages([{
+          id: 1,
+          text: "Welcome to Aditya Birla Fashion & Retail! I'm your in-store digital assistant. How may I help you today?",
+          sender: 'bot',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: true 
+          })
+        }]);
+      }
+    } catch (error) {
+      console.error('Session error:', error);
+      alert('Failed to start session. Please try again.');
+    } finally {
+      setIsLoadingSession(false);
+    }
+  };
+
+  const endSession = async () => {
+    if (!sessionToken) return;
+
+    try {
+      await fetch(`${SESSION_API}/session/end`, {
+        method: 'POST',
+        headers: { 'X-Session-Token': sessionToken }
+      });
+
+      // Reset UI
+      setSessionInfo(null);
+      setSessionToken(null);
+      setMessages([]);
+      setShowPhoneInput(true);
+      setPhoneNumber('');
+    } catch (error) {
+      console.error('End session error:', error);
+    }
+  };
+
+  const saveChatMessage = async (sender, message) => {
+    if (!sessionToken) return;
+
+    try {
+      await fetch(`${SESSION_API}/session/update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Token': sessionToken
+        },
+        body: JSON.stringify({
+          action: 'chat_message',
+          payload: { sender, message }
+        })
+      });
+    } catch (error) {
+      console.error('Failed to save chat message:', error);
+    }
+  };
 
   // Auto-scroll to bottom
   const scrollToBottom = () => {
@@ -84,13 +168,16 @@ const KioskChat = () => {
     "Excellent! Let me find the best options for you from our in-store inventory."
   ];
 
-  const handleSendMessage = () => {
-    if (!inputText.trim()) return;
+  const handleSendMessage = async () => {
+    if (!inputText.trim() || !sessionToken) return;
+
+    const messageText = inputText;
+    setInputText('');
 
     // Add user message
     const userMessage = {
       id: Date.now(),
-      text: inputText,
+      text: messageText,
       sender: 'user',
       timestamp: new Date().toLocaleTimeString('en-US', { 
         hour: '2-digit', 
@@ -100,7 +187,9 @@ const KioskChat = () => {
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setInputText('');
+
+    // Save to backend
+    await saveChatMessage('user', messageText);
 
     // Show typing indicator
     setTimeout(() => {
@@ -108,8 +197,16 @@ const KioskChat = () => {
     }, 800);
 
     // Mock bot response after 1.5-2 seconds
-    setTimeout(() => {
+    setTimeout(async () => {
       setIsTyping(false);
+      const mockBotResponses = [
+        "I'd be happy to help you with that. Let me check our latest collection for you.",
+        "That's a great choice! We have several options that match your preference.",
+        "Our premium collection features top brands like Van Heusen, Allen Solly, and Louis Philippe.",
+        "Would you like to see items available in your size and preferred color?",
+        "I can help you find the perfect match. What's your budget range?",
+        "Excellent! Let me find the best options for you from our in-store inventory."
+      ];
       const randomResponse = mockBotResponses[Math.floor(Math.random() * mockBotResponses.length)];
       const botMessage = {
         id: Date.now() + 1,
@@ -122,6 +219,7 @@ const KioskChat = () => {
         })
       };
       setMessages(prev => [...prev, botMessage]);
+      await saveChatMessage('bot', randomResponse);
     }, 2000);
   };
 
@@ -161,8 +259,55 @@ const KioskChat = () => {
     setInputText(message);
   };
 
+  // Phone Input Screen
+  if (showPhoneInput) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+        <div className="bg-white rounded-2xl shadow-2xl p-10 max-w-lg w-full mx-4 border-2 border-[#8B1538]">
+          <div className="text-center mb-8">
+            <div className="w-24 h-24 bg-gradient-to-br from-[#8B1538] to-[#A91D3A] rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
+              <ShoppingBag className="w-12 h-12 text-white" />
+            </div>
+            <h2 className="text-3xl font-bold text-[#8B1538] mb-2">In-Store Kiosk</h2>
+            <p className="text-gray-600">Aditya Birla Fashion & Retail</p>
+            <p className="text-sm text-gray-500 mt-2">Enter your phone number to access your session</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Phone Number</label>
+              <input
+                type="tel"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                placeholder="+91 98765 43210"
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-[#8B1538] focus:outline-none text-lg"
+                onKeyPress={(e) => e.key === 'Enter' && !isLoadingSession && phoneNumber.trim() && startOrRestoreSession(phoneNumber)}
+              />
+            </div>
+            
+            <button
+              onClick={() => startOrRestoreSession(phoneNumber)}
+              disabled={isLoadingSession || !phoneNumber.trim()}
+              className="w-full bg-gradient-to-r from-[#8B1538] to-[#A91D3A] text-white py-3 rounded-lg font-semibold hover:from-[#6d1028] hover:to-[#8B1538] disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-md"
+            >
+              {isLoadingSession ? 'Connecting...' : 'Access Kiosk'}
+            </button>
+            
+            <div className="bg-blue-50 border-l-4 border-blue-500 p-3 rounded">
+              <p className="text-xs text-blue-800">
+                <strong>Session Continuity:</strong> Your conversation continues from WhatsApp. Session stays active and reusable.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+      {/* Header Bar - ABFRL Branding */}
       {/* Header Bar - ABFRL Branding */}
       <div className="bg-gradient-to-r from-[#8B1538] to-[#A91D3A] text-white px-8 py-6 shadow-lg">
         <div className="flex items-center justify-between max-w-[1600px] mx-auto">
@@ -183,10 +328,52 @@ const KioskChat = () => {
             <div className="px-4 py-2 bg-white/10 rounded-full backdrop-blur-sm">
               <span className="text-sm font-medium">Store Open: 10 AM - 9 PM</span>
             </div>
+            {sessionInfo && (
+              <button
+                onClick={endSession}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-full backdrop-blur-sm transition-colors"
+                title="End Session"
+              >
+                <span className="text-sm font-medium flex items-center gap-2">
+                  <X className="w-4 h-4" />
+                  End Session
+                </span>
+              </button>
+            )}
           </div>
         </div>
         <div className="h-1 bg-gradient-to-r from-[#D4AF37] via-[#F5DEB3] to-[#D4AF37] mt-4 rounded-full opacity-80"></div>
       </div>
+
+      {/* Session Continuity Banner */}
+      {sessionInfo && (
+        <div className="bg-gradient-to-r from-[#f0f9ff] to-[#e0f2fe] border-b-2 border-[#3b82f6] px-8 py-4 shadow-md max-w-[1600px] mx-auto w-full">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-3 h-3 bg-[#3b82f6] rounded-full animate-pulse"></div>
+              <div className="text-sm">
+                <span className="font-semibold text-[#1e40af]">Active Session:</span>
+                <span className="ml-2 text-[#3b82f6] font-mono text-xs bg-white px-2 py-1 rounded">{sessionInfo.session_id}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-6 text-sm">
+              <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg shadow-sm">
+                <User className="w-4 h-4 text-[#1e40af]" />
+                <span className="font-semibold text-[#1e40af]">{sessionInfo.phone}</span>
+              </div>
+              <div className="px-3 py-2 bg-gradient-to-r from-[#8B1538] to-[#A91D3A] text-white rounded-lg shadow-sm">
+                <span className="font-semibold">🏬 In-Store Kiosk</span>
+              </div>
+              {sessionInfo.data?.chat_context?.length > 1 && (
+                <div className="flex items-center gap-2 text-[#059669] font-semibold bg-white px-3 py-2 rounded-lg shadow-sm">
+                  <span className="text-lg">↻</span>
+                  <span>Session restored ({sessionInfo.data.chat_context.length} messages)</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col max-w-[1600px] mx-auto w-full px-8 py-6">
