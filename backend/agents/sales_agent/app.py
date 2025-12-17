@@ -226,6 +226,22 @@ async def handle_message(request: MessageRequest):
             return m2.group(1)
         return None
 
+    # Helper: extract SKU or product name from free text
+    def extract_product_token(text: str) -> Optional[str]:
+        # Look for SKU patterns first
+        m = re.search(r"\b(SKU\d{3,6})\b", text, re.I)
+        if m:
+            return m.group(1).upper()
+        # Look for phrases like 'buy <product name>' or 'i want to buy <product>'
+        m2 = re.search(r"(?:buy|order|get|purchase)\s+(?:the\s+)?([\w\s'\-&,]+)", text, re.I)
+        if m2:
+            prod = m2.group(1).strip()
+            # trim trailing words like 'please' or punctuation
+            prod = re.sub(r"[\?\.!]$", "", prod).strip()
+            if len(prod) > 1:
+                return prod
+        return None
+
     customer_id_in_message = extract_customer_id(request.message)
     # If user provided a customer id as a follow-up, try to resume pending recommendation
     if customer_id_in_message and detected.get("type") != "recommendation":
@@ -364,17 +380,66 @@ async def handle_message(request: MessageRequest):
                             reply_text = "I couldn't find any recommendations for those preferences. Could you share your size, preferred brands, or relax the budget?"
                             metadata.update({"recommendation": data, "note": "empty_results"})
                         else:
-                            # Build human friendly reply
-                            reasons = data.get("personalized_reasoning", "Here are some picks for you.")
-                            items = items[:3]
-                            lines = [reasons, "\nTop picks:"]
-                            for p in items:
-                                lines.append(f"• {p.get('name')} — ₹{p.get('price')}")
-                                if p.get('personalized_reason'):
-                                    lines.append(f"  {p.get('personalized_reason')}")
+                                # If we requested gifting_genius but the worker returned no gift messages/suitability,
+                                # attempt a conservative fallback to normal mode and prefer results that include gift info.
+                                used_data = data
+                                try_fallback = payload.get("mode") == "gifting_genius"
+                                if try_fallback:
+                                    count_with_gift = sum(1 for p in items if p.get("gift_message") or p.get("gift_suitability"))
+                                    if count_with_gift == 0:
+                                        logger.info("Gifting mode returned no gift fields; retrying recommendation with mode=normal")
+                                        fallback_payload = dict(payload)
+                                        fallback_payload["mode"] = "normal"
+                                        # remove gifting-specific recipient fields to broaden search
+                                        for k in ["recipient_relation", "recipient_gender", "occasion"]:
+                                            fallback_payload.pop(k, None)
+                                        try:
+                                            fresp = requests.post("http://localhost:8004/recommend", json=fallback_payload, timeout=6)
+                                            if fresp.status_code == 200:
+                                                fdata = fresp.json()
+                                                fitems = fdata.get("recommended_products", [])
+                                                if fitems:
+                                                    logger.info("Fallback normal-mode recommendations found; using fallback results")
+                                                    used_data = fdata
+                                                    items = fitems
+                                                    # annotate metadata that we fell back
+                                                    data = used_data
+                                                    data.setdefault("metadata", {})["fallbacked_from"] = "gifting_genius"
+                                        except requests.exceptions.RequestException as e:
+                                            logger.warning(f"Fallback recommendation call failed: {e}")
 
-                            reply_text = "\n".join(lines)
-                            metadata.update({"recommendation": data})
+                                # Build human friendly reply using selected data
+                                reasons = used_data.get("personalized_reasoning", "Here are some picks for you.")
+                                items = items[:3]
+                                header = "Top picks:" if used_data.get("metadata", {}).get("mode") != "gifting_genius" else "Gift picks:"
+                                lines = [reasons, "\n" + header]
+                                for p in items:
+                                    lines.append(f"• {p.get('name')} — ₹{p.get('price')}")
+                                    if p.get('personalized_reason'):
+                                        lines.append(f"  {p.get('personalized_reason')}")
+                                    # Show gift-specific message if provided by recommendation worker
+                                    if p.get('gift_message'):
+                                        lines.append(f"  🎁 Gift message suggestion: {p.get('gift_message')}")
+                                    if p.get('gift_suitability'):
+                                        lines.append(f"  🎯 Suitability: {p.get('gift_suitability')}")
+
+                                reply_text = "\n".join(lines)
+                                metadata.update({"recommendation": data})
+
+                                # Persist the agent recommendation into session chat context for later use
+                                try:
+                                    if request.session_token:
+                                        sess_payload = {
+                                            "action": "chat_message",
+                                            "payload": {
+                                                "sender": "agent",
+                                                "message": reply_text,
+                                                "metadata": {"recommendation": data}
+                                            }
+                                        }
+                                        requests.post("http://localhost:8000/session/update", headers={"X-Session-Token": request.session_token, "Content-Type": "application/json"}, json=sess_payload, timeout=2)
+                                except requests.exceptions.RequestException as e:
+                                    logger.warning(f"Failed to persist recommendation to session: {e}")
                     elif resp.status_code == 404:
                         # Customer profile not found — ask user to provide/confirm customer id
                         logger.warning("Recommendation worker: customer profile not found")
@@ -405,30 +470,136 @@ async def handle_message(request: MessageRequest):
                 reply_text = "Which product SKU would you like me to check?"
 
         elif detected["type"] == "payment":
-            # Use payment worker to simulate a payment (demo)
-            payload = {
-                "user_id": request.metadata.get("user_id", "user_001"),
-                "amount": request.metadata.get("amount", 0.0),
-                "payment_method": request.metadata.get("payment_method", "upi"),
-                "order_id": request.metadata.get("order_id")
-            }
-            # Validate amount before calling payment service
-            if not payload["amount"] or payload["amount"] <= 0:
-                reply_text = "I don't have an order amount to process payment. Please provide the amount you'd like to pay."
-            else:
-                logger.info(f"Calling payment service with payload: {payload}")
+            # Enhanced flow: attempt to infer product/amount from message or recent recommendation in session
+            user_id = request.metadata.get("user_id") or request.metadata.get("customer_id")
+            inferred_amount = request.metadata.get("amount")
+            inferred_sku_or_name = extract_product_token(request.message)
+
+            chosen_product = None
+            # If amount not provided, try to infer from recent recommendation stored in session
+            if (not inferred_amount or inferred_amount <= 0) and request.session_token:
                 try:
-                    resp = requests.post("http://localhost:8003/payment/process", json=payload, timeout=6)
+                    sess_resp = requests.get("http://localhost:8000/session/restore", headers={"X-Session-Token": request.session_token}, timeout=3)
+                    if sess_resp.status_code == 200:
+                        sess = sess_resp.json().get("session", {})
+                        chat_ctx = sess.get("data", {}).get("chat_context", [])
+                        # search recent agent recommendation metadata for products
+                        for item in reversed(chat_ctx):
+                            if item.get("sender") == "agent" and item.get("metadata", {}).get("recommendation"):
+                                rec = item.get("metadata").get("recommendation")
+                                prods = rec.get("recommended_products", [])
+                                # try to match SKU first
+                                if inferred_sku_or_name and re.match(r"^SKU\d+", str(inferred_sku_or_name), re.I):
+                                    for p in prods:
+                                        if p.get("sku", "").upper() == inferred_sku_or_name.upper():
+                                            chosen_product = p
+                                            break
+                                # try name substring match
+                                if not chosen_product and inferred_sku_or_name:
+                                    for p in prods:
+                                        if inferred_sku_or_name.lower() in p.get("name", "").lower():
+                                            chosen_product = p
+                                            break
+                                # fallback: pick top product
+                                if not chosen_product and prods:
+                                    chosen_product = prods[0]
+                                if chosen_product:
+                                    break
+                except requests.exceptions.RequestException:
+                    logger.warning("Could not restore session to infer product for payment")
+
+            # If we matched a product, set amount and build an order id
+            if chosen_product:
+                inferred_amount = inferred_amount or chosen_product.get("price")
+                order_id = request.metadata.get("order_id") or f"order-{uuid.uuid4().hex[:8]}"
+                payment_payload = {
+                    "user_id": user_id or "guest",
+                    "amount": inferred_amount,
+                    "payment_method": request.metadata.get("payment_method", "upi"),
+                    "order_id": order_id,
+                    "sku": chosen_product.get("sku")
+                }
+                logger.info(f"Calling payment service with inferred payload: {payment_payload}")
+                try:
+                    resp = requests.post("http://localhost:8003/payment/process", json=payment_payload, timeout=6)
                     if resp.status_code == 200:
                         data = resp.json()
                         reply_text = f"Payment {'succeeded' if data.get('success') else 'failed'}: {data.get('message')}"
-                        metadata.update({"payment": data})
+                        metadata.update({"payment": data, "order_id": order_id, "charged_amount": inferred_amount})
                     else:
                         logger.error(f"Payment service returned status {resp.status_code}: {resp.text}")
                         reply_text = "Payment service is unavailable right now. Please try again later or provide payment details."
                 except requests.exceptions.RequestException as e:
                     logger.error(f"Payment service call failed: {e}")
                     reply_text = "Payment service is unavailable right now. Please try again later."
+            else:
+                # Still no chosen product from session — attempt a recommendation fallback using customer_id
+                if user_id:
+                    try:
+                        fb_payload = {"customer_id": user_id, "mode": "normal", "current_cart_skus": [], "limit": 5}
+                        logger.info(f"Attempting recommendation fallback for payment inference: {fb_payload}")
+                        fb_resp = requests.post("http://localhost:8004/recommend", json=fb_payload, timeout=6)
+                        if fb_resp.status_code == 200:
+                            fb_data = fb_resp.json()
+                            fb_prods = fb_data.get("recommended_products", [])
+                            if fb_prods:
+                                # normalize helper
+                                def norm(s: str) -> str:
+                                    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+                                # try to match by SKU first
+                                if inferred_sku_or_name and re.match(r"^SKU\d+", str(inferred_sku_or_name), re.I):
+                                    for p in fb_prods:
+                                        if p.get("sku", "").upper() == inferred_sku_or_name.upper():
+                                            chosen_product = p
+                                            break
+
+                                # try name substring match using normalized forms
+                                if not chosen_product and inferred_sku_or_name:
+                                    nin = norm(inferred_sku_or_name)
+                                    for p in fb_prods:
+                                        if nin and nin in norm(p.get("name", "")):
+                                            chosen_product = p
+                                            break
+
+                                # fallback to top product
+                                if not chosen_product:
+                                    chosen_product = fb_prods[0]
+
+                                # attach debug info
+                                metadata.setdefault("payment_inference_debug", {})["candidates_checked"] = [p.get("name") for p in fb_prods[:5]]
+
+                            if chosen_product:
+                                inferred_amount = inferred_amount or chosen_product.get("price")
+                                order_id = request.metadata.get("order_id") or f"order-{uuid.uuid4().hex[:8]}"
+                                payment_payload = {
+                                    "user_id": user_id or "guest",
+                                    "amount": inferred_amount,
+                                    "payment_method": request.metadata.get("payment_method", "upi"),
+                                    "order_id": order_id,
+                                    "sku": chosen_product.get("sku")
+                                }
+                                metadata.setdefault("payment_inference", {})["fallback_recommendation_used"] = True
+                                logger.info(f"Calling payment service with fallback payload: {payment_payload}")
+                                try:
+                                    resp = requests.post("http://localhost:8003/payment/process", json=payment_payload, timeout=6)
+                                    if resp.status_code == 200:
+                                        data = resp.json()
+                                        reply_text = f"Payment {'succeeded' if data.get('success') else 'failed'}: {data.get('message')}"
+                                        metadata.update({"payment": data, "order_id": order_id, "charged_amount": inferred_amount})
+                                    else:
+                                        logger.error(f"Payment service returned status {resp.status_code}: {resp.text}")
+                                        reply_text = "Payment service is unavailable right now. Please try again later or provide payment details."
+                                except requests.exceptions.RequestException as e:
+                                    logger.error(f"Payment service call failed: {e}")
+                                    reply_text = "Payment service is unavailable right now. Please try again later."
+                                # end payment attempt
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"Recommendation fallback failed: {e}")
+
+                if not chosen_product:
+                    # Still no amount/product inferred — prompt user for amount or to confirm which item to buy
+                    reply_text = "I don't have an order amount or selected product to process payment. Which item would you like to buy, or what amount should I charge?"
 
         else:
             # Fallback to engine/LLM or simple echo
@@ -438,8 +609,17 @@ async def handle_message(request: MessageRequest):
         logger.error(f"Worker call failed: {e}")
         reply_text = "Sorry, an internal service is unavailable. Please try again later."
 
+    # Sanitize reply_text to remove control characters that may break JSON parsing
+    def sanitize_text(s: Optional[str]) -> str:
+        if not s:
+            return ""
+        # remove C0 control characters except newline (\n) and tab (\t)
+        return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(s))
+
+    safe_reply = sanitize_text(reply_text)
+
     response = AgentResponse(
-        reply=reply_text or "",
+        reply=safe_reply,
         session_token=session_token,
         timestamp=datetime.utcnow().isoformat(),
         metadata=metadata
@@ -486,3 +666,4 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+

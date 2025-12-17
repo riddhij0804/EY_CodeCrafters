@@ -273,7 +273,11 @@ def update_session_state(token: str, action: str, payload: Dict[str, Any]) -> Di
 
         # Record the chat message with a timestamp and optional sender (defaults to 'user')
         sender = payload.get("sender", "user")
+        # Allow optional metadata to be stored alongside chat messages
+        metadata = payload.get("metadata")
         chat_entry = {"sender": sender, "message": message, "timestamp": _now_iso()}
+        if metadata is not None:
+            chat_entry["metadata"] = metadata
         data["chat_context"].append(chat_entry)
 
         data["last_action"] = {"type": "chat_message", "sender": sender, "timestamp": _now_iso()}
