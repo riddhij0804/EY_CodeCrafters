@@ -8,6 +8,10 @@ langgraph
 google-generativeai
 groq
 
+# --- Vertex AI (Google Cloud) ---
+google-cloud-aiplatform
+vertexai
+
 # --- Vector Store for RAG ---
 chromadb
 sentence-transformers

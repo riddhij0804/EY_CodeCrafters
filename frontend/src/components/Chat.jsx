@@ -229,7 +229,8 @@ const Chat = () => {
         text: agentText,
         sender: 'agent',
         timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-        status: 'read'
+        status: 'read',
+        cards: data.cards || []  // Add product cards from API response
       };
 
       setMessages(prev => [...prev, agentMessage]);
@@ -413,6 +414,37 @@ const Chat = () => {
               <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
                 {message.text}
               </p>
+              
+              {/* Product Cards */}
+              {message.cards && message.cards.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {message.cards.map((card, idx) => (
+                    <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                      <div className="flex gap-3">
+                        {card.image && (
+                          <img 
+                            src={card.image} 
+                            alt={card.name} 
+                            className="w-16 h-16 object-cover rounded"
+                            onError={(e) => e.target.style.display = 'none'}
+                          />
+                        )}
+                        <div className="flex-1">
+                          <h4 className="font-semibold text-sm text-gray-900">{card.name}</h4>
+                          <p className="text-xs text-gray-600 mt-1">{card.sku}</p>
+                          {card.price && (
+                            <p className="text-sm font-bold text-green-600 mt-1">₹{card.price}</p>
+                          )}
+                          {card.description && (
+                            <p className="text-xs text-gray-500 mt-2 line-clamp-2">{card.description}</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
               <div className={`flex items-center gap-1 justify-end mt-1 ${
                 message.sender === 'user' ? 'text-gray-600' : 'text-gray-500'
               }`}>

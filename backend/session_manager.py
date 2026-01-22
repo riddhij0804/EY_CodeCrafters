@@ -398,4 +398,5 @@ async def session_end(x_session_token: Optional[str] = Header(None, alias="X-Ses
 # Allow this module to be executed directly for local development
 if __name__ == "__main__":
     # Run uvicorn with this module's `app` object
-    uvicorn.run("backend.session_manager:app", host="0.0.0.0", port=8000, reload=True)
+    # Use "__main__:app" when running directly, not "backend.session_manager:app"
+    uvicorn.run("__main__:app", host="0.0.0.0", port=8000, reload=True)
