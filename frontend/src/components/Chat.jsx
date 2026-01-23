@@ -17,6 +17,8 @@ const Chat = () => {
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [expandedMessages, setExpandedMessages] = useState(new Set());
+  const [expandedCards, setExpandedCards] = useState(new Set());
   const [isRazorpayReady, setIsRazorpayReady] = useState(false);
   const [isPaymentProcessing, setIsPaymentProcessing] = useState(false);
   const messagesEndRef = useRef(null);
@@ -471,6 +473,22 @@ const Chat = () => {
     }
   };
 
+  const toggleExpandMessage = (id) => {
+    setExpandedMessages(prev => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id); else s.add(id);
+      return s;
+    });
+  };
+
+  const toggleExpandCard = (id) => {
+    setExpandedCards(prev => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id); else s.add(id);
+      return s;
+    });
+  };
+
   // Phone Input Modal
   if (showPhoneInput) {
     return (
@@ -596,7 +614,17 @@ const Chat = () => {
               }`}
             >
               <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                {message.text}
+                {message.text && message.text.length > 800 && !expandedMessages.has(message.id)
+                  ? `${message.text.slice(0, 380)}... `
+                  : message.text}
+                {message.text && message.text.length > 800 && (
+                  <button
+                    onClick={() => toggleExpandMessage(message.id)}
+                    className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
+                  >
+                    {expandedMessages.has(message.id) ? 'Show less' : 'Show more'}
+                  </button>
+                )}
               </p>
               
               {/* Product Cards */}
@@ -620,7 +648,19 @@ const Chat = () => {
                             <p className="text-sm font-bold text-green-600 mt-1">₹{card.price}</p>
                           )}
                           {card.description && (
-                            <p className="text-xs text-gray-500 mt-2 line-clamp-2">{card.description}</p>
+                            <div className="mt-2 text-xs text-gray-500">
+                              {card.description.length > 240 && !expandedCards.has(`${message.id}-${idx}`)
+                                ? `${card.description.slice(0, 220)}... `
+                                : card.description}
+                              {card.description.length > 240 && (
+                                <button
+                                  onClick={() => toggleExpandCard(`${message.id}-${idx}`)}
+                                  className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
+                                >
+                                  {expandedCards.has(`${message.id}-${idx}`) ? 'Show less' : 'Show more'}
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>

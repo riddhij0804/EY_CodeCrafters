@@ -216,21 +216,48 @@ def is_valid_response(text: str) -> bool:
 
 def get_customer_profile(customer_id: str) -> Optional[Dict]:
     """Get customer profile from customers.csv"""
-    customer = customers_df[customers_df['customer_id'] == int(customer_id)]
-    
-    if customer.empty:
+    # Try numeric customer_id lookup first
+    customer = None
+    try:
+        cid_int = int(customer_id)
+    except (ValueError, TypeError):
+        cid_int = None
+
+    if cid_int is not None:
+        customer = customers_df[customers_df['customer_id'] == cid_int]
+
+    # If not found by numeric id, try phone number lookup (normalize digits)
+    if customer is None or customer.empty:
+        phone_raw = str(customer_id).strip()
+        # Extract digits only (handles +91, spaces, dashes)
+        phone_digits = ''.join(ch for ch in phone_raw if ch.isdigit())
+
+        if phone_digits:
+            # Normalize phone numbers in the customers dataframe to digits-only for comparison
+            phone_series = customers_df['phone_number'].astype(str).str.replace(r'[^0-9]', '', regex=True)
+
+            # Exact match first
+            match = customers_df[phone_series == phone_digits]
+            if match.empty:
+                # Try suffix match (handles country code differences)
+                match = customers_df[phone_series.str.endswith(phone_digits)]
+
+            if not match.empty:
+                customer = match
+
+    if customer is None or customer.empty:
         logger.warning(f"Customer {customer_id} not found")
         return None
-    
+
     customer_data = customer.iloc[0].to_dict()
-    
+
     # Parse purchase history
     try:
-        purchase_history = ast.literal_eval(customer_data['purchase_history'])
+        purchase_history = ast.literal_eval(customer_data.get('purchase_history', '[]'))
         customer_data['purchase_history'] = purchase_history
-    except:
+    except Exception:
         customer_data['purchase_history'] = []
-    
+
     return customer_data
 
 
@@ -274,14 +301,14 @@ def filter_products_by_intent(
         if target_gender == 'male':
             # For male: must contain men/man/boys/men's, must NOT contain women/woman/girls/women's
             filtered = filtered[
-                (filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
-                (~filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
+                (filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
             ]
         else:  # female
             # For female: must contain women/woman/girls/women's, must NOT contain men/man/boys/men's
             filtered = filtered[
-                (filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
-                (~filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True))
+                (filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True))
             ]
     
     # Filter by category
@@ -637,14 +664,14 @@ async def _mode_gifting_genius(request: RecommendationRequest, customer_profile:
         if recipient_gender == 'male':
             # For male: must contain men/man/boys/men's, must NOT contain women/woman/girls/women's
             filtered = filtered[
-                (filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
-                (~filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
+                (filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
             ]
         else:  # female
             # For female: must contain women/woman/girls/women's, must NOT contain men/man/boys/men's
             filtered = filtered[
-                (filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
-                (~filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True))
+                (filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True))
             ]
         
         logger.info(f"   Filtered to {len(filtered)} gender-appropriate gift products")
@@ -718,20 +745,20 @@ async def _mode_gifting_genius(request: RecommendationRequest, customer_profile:
         filtered = products_df[(products_df['ratings'] >= 4.5) & 
                                (products_df['price'] >= budget_min) & 
                                (products_df['price'] <= budget_max)]
-        
-        # RE-APPLY GENDER FILTER to fallback
-        if recipient_gender in ['male', 'female']:
-            if recipient_gender == 'male':
-                filtered = filtered[
-                    (filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
-                    (~filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
-                ]
-            else:  # female
-                filtered = filtered[
-                    (filtered['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
-                    (~filtered['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True))
-                ]
-            logger.info(f"   Fallback filtered to {len(filtered)} gender-appropriate products")
+
+    # RE-APPLY GENDER FILTER to fallback
+    if recipient_gender in ['male', 'female']:
+        if recipient_gender == 'male':
+            filtered = filtered[
+                (filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
+            ]
+        else:  # female
+            filtered = filtered[
+                (filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
+                (~filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True))
+            ]
+        logger.info(f"   Fallback filtered to {len(filtered)} gender-appropriate products")
     
     filtered = filtered.sort_values('ratings', ascending=False)
     
@@ -905,14 +932,14 @@ async def _mode_trendseer(request: RecommendationRequest, customer_profile: Dict
         if buyer_gender == 'male':
             # For male: must contain men/man/boys/men's, must NOT contain women/woman/girls/women's
             trending = trending[
-                (trending['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
-                (~trending['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
+                (trending['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
+                (~trending['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
             ]
         else:  # female
             # For female: must contain women/woman/girls/women's, must NOT contain men/man/boys/men's
             trending = trending[
-                (trending['ProductDisplayName'].str.contains(r'\b(women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
-                (~trending['ProductDisplayName'].str.contains(r'\b(men|man|boys|men\'s)\b', case=False, na=False, regex=True))
+                (trending['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
+                (~trending['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True))
             ]
         
         logger.info(f"   Filtered to {len(trending)} gender-appropriate trending products")
