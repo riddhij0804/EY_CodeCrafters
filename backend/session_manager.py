@@ -17,12 +17,14 @@ import uuid
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+from pathlib import Path
 
 # FastAPI imports
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import uvicorn
+import pandas as pd
 
 # Configure a simple logger for this module
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -50,6 +52,21 @@ SESSIONS: Dict[str, Dict[str, Any]] = {}
 PHONE_SESSIONS: Dict[str, str] = {}
 # phone_number -> persistent session_id (ensures one ID per phone across channels)
 PHONE_SESSION_IDS: Dict[str, str] = {}
+# phone_number -> customer_id mapping from CSV
+PHONE_TO_CUSTOMER: Dict[str, str] = {}
+
+# Load customers.csv to map phone numbers to customer IDs
+try:
+    data_path = Path(__file__).parent / "data" / "customers.csv"
+    customers_df = pd.read_csv(data_path)
+    for _, row in customers_df.iterrows():
+        phone = str(row['phone_number'])
+        customer_id = str(row['customer_id'])
+        PHONE_TO_CUSTOMER[phone] = customer_id
+    logger.info(f"Loaded {len(PHONE_TO_CUSTOMER)} phone-to-customer mappings")
+except Exception as e:
+    logger.error(f"Failed to load customers.csv: {e}")
+    PHONE_TO_CUSTOMER = {}
 
 # No expiry: sessions remain active unless explicitly ended
 
@@ -157,12 +174,20 @@ def create_session(phone: str, channel: str = "whatsapp", user_id: Optional[str]
     session_id = PHONE_SESSION_IDS.get(phone) or str(uuid.uuid4())
     PHONE_SESSION_IDS[phone] = session_id
 
+    # Map phone to customer_id from CSV
+    customer_id = PHONE_TO_CUSTOMER.get(phone)
+    if customer_id:
+        logger.info(f"Mapped phone {phone} to customer_id {customer_id}")
+    else:
+        logger.warning(f"Phone {phone} not found in customers.csv")
+    
     # Build the session payload with the required structure
     session = {
         "session_id": session_id,  # persistent id for the phone
         "phone": phone,  # primary identifier
         "channel": channel,  # current channel
         "user_id": user_id,  # can be None
+        "customer_id": customer_id,  # mapped from customers.csv
         "data": {
             "cart": [],  # list of cart items
             "recent": [],  # recently viewed products

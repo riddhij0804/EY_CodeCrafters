@@ -148,6 +148,7 @@ class VertexIntentDetector:
    - gifting: Buying a gift for someone
    - comparison: Comparing multiple products
    - trend: Asking about trends/popular items
+   - social_validation: Asking what others buy/like, community insights, what's popular in their circle
    - support: Help with order/return/issue
    - fallback: Unclear intent
 
@@ -176,7 +177,7 @@ class VertexIntentDetector:
 
 ### Response Format (valid JSON only):
 {{
-  "intent": "recommendation|inventory|payment|gifting|comparison|trend|support|fallback",
+  "intent": "recommendation|inventory|payment|gifting|comparison|trend|social_validation|support|fallback",
   "confidence": 0.95,
   "entities": {{
     "category": "footwear",
@@ -379,6 +380,19 @@ Respond with ONLY the JSON object, no additional text."""
             sku_match = re.search(r"\b(SKU\d{3,6})\b", user_message, re.IGNORECASE)
             if sku_match:
                 entities["sku"] = sku_match.group(1).upper()
+            else:
+                # Extract product name from the message
+                # Pattern: "is there [product name] in stock" or "do you have [product name]"
+                product_patterns = [
+                    r"(?:is there|do you have|available)\s+(.+?)\s+(?:in stock|available|stock)",
+                    r"(?:check|checking)\s+(?:stock|availability)\s+(?:for|of)\s+(.+?)(?:\?|$)",
+                    r"(?:is|are)\s+(.+?)\s+(?:available|in stock)",
+                ]
+                for pattern in product_patterns:
+                    match = re.search(pattern, text)
+                    if match:
+                        entities["product_name"] = match.group(1).strip()
+                        break
         
         # Payment/checkout intent
         elif re.search(r"\b(buy|checkout|order|pay|purchase|place order|proceed)\b", text):

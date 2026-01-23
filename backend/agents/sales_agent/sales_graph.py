@@ -72,6 +72,7 @@ WORKER_SERVICES = {
     "fulfillment": "http://localhost:8007",
     "post_purchase": "http://localhost:8005",
     "stylist": "http://localhost:8006",
+    "virtual_circles": "http://localhost:8009",  # Virtual Circles (Community Chat)
 }
 
 
@@ -234,6 +235,7 @@ def route_by_intent(state: SalesAgentState) -> Literal[
     "comparison_worker",
     "trend_worker",
     "support_worker",
+    "virtual_circles_worker",
     "fallback_worker"
 ]:
     """
@@ -257,6 +259,8 @@ def route_by_intent(state: SalesAgentState) -> Literal[
         "comparison": "recommendation_worker",  # Comparison uses recommendation
         "trend": "recommendation_worker",  # Trends use recommendation
         "support": "post_purchase_worker",  # Support uses post-purchase
+        "social_validation": "virtual_circles_worker",  # Community chat & insights
+        "community": "virtual_circles_worker",  # Community features
         "fallback": "fallback_worker",
     }
     
@@ -444,6 +448,92 @@ async def call_payment_worker(state: SalesAgentState) -> SalesAgentState:
     return state
 
 
+async def call_virtual_circles_worker(state: SalesAgentState) -> SalesAgentState:
+    """Call Virtual Circles microservice for community insights."""
+    logger.info("📞 Calling Virtual Circles Worker...")
+    
+    state["worker_service"] = "virtual_circles"
+    state["worker_url"] = WORKER_SERVICES["virtual_circles"]
+    
+    try:
+        # Extract customer ID from metadata
+        customer_id = None
+        phone = state.get("metadata", {}).get("phone")
+        
+        if phone and phone in _customer_phone_map:
+            customer_id = _customer_phone_map[phone]
+            logger.info(f"✅ Resolved phone {phone} to customer_id {customer_id}")
+        
+        if not customer_id:
+            customer_id = state.get("metadata", {}).get("user_id", "101")  # Default fallback
+            logger.warning(f"⚠️  Using fallback customer_id: {customer_id}")
+        
+        # Assign user to circle (if not already assigned)
+        url = f"{WORKER_SERVICES['virtual_circles']}/circles/assign-user"
+        response = requests.post(url, params={"user_id": customer_id}, timeout=5)
+        response.raise_for_status()
+        
+        circle_data = response.json()
+        circle_id = circle_data.get("circle_id")
+        
+        # Get circle info
+        circle_url = f"{WORKER_SERVICES['virtual_circles']}/circles/{circle_id}"
+        circle_response = requests.get(circle_url, timeout=5)
+        circle_response.raise_for_status()
+        circle_info = circle_response.json()
+        
+        # Get circle trends
+        trends_url = f"{WORKER_SERVICES['virtual_circles']}/circles/{circle_id}/trends"
+        trends_response = requests.get(trends_url, params={"days": 7}, timeout=5)
+        trends_response.raise_for_status()
+        trends_data = trends_response.json()
+        trends = trends_data.get("trends", [])
+        
+        # Build response
+        member_count = circle_info.get("user_count", 0)
+        top_brands = ", ".join(circle_info.get("top_brands", [])[:3])
+        
+        insights = []
+        insights.append(f"👥 You're part of a community with {member_count} similar shoppers!")
+        
+        if top_brands:
+            insights.append(f"🏷️  Your circle loves: {top_brands}")
+        
+        if trends:
+            top_trend = trends[0]
+            product_name = top_trend.get("product_name", "")
+            brand = top_trend.get("brand", "")
+            unique_users = top_trend.get("unique_users", 0)
+            insights.append(f"🔥 Trending: {unique_users} people in your circle viewed {brand} {product_name}")
+        
+        state["response"] = "\n\n".join(insights)
+        state["metadata"]["circle_id"] = circle_id
+        state["metadata"]["circle_member_count"] = member_count
+        
+        # Add trending products as cards
+        cards = []
+        for trend in trends[:3]:
+            cards.append({
+                "sku": trend.get("sku"),
+                "name": trend.get("product_name"),
+                "brand": trend.get("brand"),
+                "price": trend.get("price", 0),
+                "image": "",
+                "personalized_reason": f"🔥 {trend.get('trend_label', 'Popular')} with {trend.get('unique_users', 0)} people in your circle"
+            })
+        
+        state["cards"] = cards
+        logger.info(f"✅ Virtual Circles insights generated for circle {circle_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Virtual Circles worker failed: {e}")
+        state["response"] = "I'm having trouble connecting with your style community right now. Please try again."
+        state["error"] = str(e)
+        state["cards"] = []
+    
+    return state
+
+
 async def call_fallback_worker(state: SalesAgentState) -> SalesAgentState:
     """Fallback response when intent is unclear."""
     logger.info("📞 Using fallback response...")
@@ -456,7 +546,8 @@ async def call_fallback_worker(state: SalesAgentState) -> SalesAgentState:
         "• Show product recommendations\n"
         "• Check product availability\n"
         "• Help you checkout\n"
-        "• Find gifts for someone special\n\n"
+        "• Find gifts for someone special\n"
+        "• See what your style community is loving\n\n"
         "What would you like to do?"
     )
     state["cards"] = []
@@ -485,6 +576,7 @@ def create_sales_agent_graph() -> StateGraph:
     workflow.add_node("recommendation_worker", call_recommendation_worker)
     workflow.add_node("inventory_worker", call_inventory_worker)
     workflow.add_node("payment_worker", call_payment_worker)
+    workflow.add_node("virtual_circles_worker", call_virtual_circles_worker)
     workflow.add_node("fallback_worker", call_fallback_worker)
     
     # Set entry point
@@ -502,6 +594,7 @@ def create_sales_agent_graph() -> StateGraph:
             "trend_worker": "recommendation_worker",
             "gifting_worker": "recommendation_worker",
             "support_worker": "fallback_worker",
+            "virtual_circles_worker": "virtual_circles_worker",
             "fallback_worker": "fallback_worker",
         }
     )
@@ -510,6 +603,7 @@ def create_sales_agent_graph() -> StateGraph:
     workflow.add_edge("recommendation_worker", END)
     workflow.add_edge("inventory_worker", END)
     workflow.add_edge("payment_worker", END)
+    workflow.add_edge("virtual_circles_worker", END)
     workflow.add_edge("fallback_worker", END)
     
     # Compile graph
