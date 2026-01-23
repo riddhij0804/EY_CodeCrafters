@@ -1,14 +1,25 @@
 # Payment Agent - FastAPI Server
 # Endpoints: POST /payment/process, GET /payment/transaction/{txn_id}, GET /payment/user-transactions/{user_id}
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Dict, Optional
 import uvicorn
 import uuid
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+import json
+import logging
+import os
+print(">>> Razorpay router loaded")
+try:
+    import razorpay
+except ImportError:  # pragma: no cover - dependency managed via requirements
+    razorpay = None
+
 import redis_utils
+import payment_repository
 
 app = FastAPI(
     title="Payment Agent",
@@ -24,6 +35,56 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+logger = logging.getLogger(__name__)
+
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+
+razorpay_client = None
+razorpay_router = APIRouter(prefix="/payment/razorpay", tags=["Razorpay"])
+
+
+def _ensure_razorpay_client():
+    """Return an initialised Razorpay client or raise an HTTP error."""
+    global razorpay_client
+
+    if razorpay is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Razorpay SDK not installed. Run pip install razorpay.",
+        )
+
+    if not (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET):
+        raise HTTPException(
+            status_code=503,
+            detail="Razorpay credentials not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.",
+        )
+
+    if razorpay_client is None:
+        logger.info("Initialising Razorpay test client")
+        razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+    return razorpay_client
+
+
+def _quantize(value: Decimal) -> str:
+    """Format Decimal values with two decimal places for CSV storage."""
+    return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _store_transaction_safely(transaction_id: str, data: Dict[str, str], user_key: str, amount: Decimal) -> None:
+    """Persist Razorpay transactions to Redis, ignoring missing client errors."""
+    try:
+        redis_utils.store_transaction(transaction_id, data)
+        redis_utils.store_payment_attempt(user_key, {
+            "transaction_id": transaction_id,
+            "amount": float(amount),
+            "status": data.get("status", "success"),
+        })
+    except RuntimeError:
+        logger.debug("Redis not configured; skipped caching Razorpay payment")
 
 
 # ==========================================
@@ -126,6 +187,25 @@ class POSResponse(BaseModel):
     timestamp: str
 
 
+class RazorpayCreateOrderRequest(BaseModel):
+    amount_rupees: float = Field(..., gt=0, description="Amount to collect via Razorpay test order")
+    currency: str = Field("INR", description="Three letter currency code")
+    receipt: Optional[str] = Field(None, description="Optional receipt identifier shown in Razorpay dashboard")
+    notes: Dict[str, str] = Field(default_factory=dict, description="Additional metadata forwarded to Razorpay")
+
+
+class RazorpayVerifyRequest(BaseModel):
+    razorpay_payment_id: str = Field(..., description="Payment ID returned by Razorpay Checkout")
+    razorpay_order_id: str = Field(..., description="Order ID returned during create-order")
+    razorpay_signature: Optional[str] = Field(None, description="Signature for server-side verification")
+    amount_rupees: Optional[float] = Field(None, gt=0, description="Captured amount in rupees")
+    method: Optional[str] = Field(None, description="Payment method recorded for this transaction")
+    discount_applied: Optional[float] = Field(0.0, ge=0, description="Applied discount value")
+    gst: Optional[float] = Field(None, ge=0, description="GST amount for record keeping")
+    idempotency_key: Optional[str] = Field(None, description="Client supplied idempotency key")
+    user_id: Optional[str] = Field(None, description="User reference for auditing")
+
+
 # ==========================================
 # ROUTES
 # ==========================================
@@ -139,6 +219,104 @@ async def root():
         "version": "1.0.0",
         "timestamp": datetime.now().isoformat()
     }
+
+
+@razorpay_router.post("/create-order")
+async def create_razorpay_order(payload: RazorpayCreateOrderRequest):
+    """Create a Razorpay order in test mode (no real charge)."""
+    client = _ensure_razorpay_client()
+
+    amount_rupees = Decimal(str(payload.amount_rupees))
+    if amount_rupees <= 0:
+        raise HTTPException(status_code=400, detail="amount_rupees must be greater than zero")
+
+    amount_rupees = amount_rupees.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    amount_paise = int((amount_rupees * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    currency = (payload.currency or "INR").upper()
+
+    order_payload = {
+        "amount": amount_paise,
+        "currency": currency,
+        "payment_capture": 1,
+    }
+    if payload.receipt:
+        order_payload["receipt"] = payload.receipt
+    if payload.notes:
+        order_payload["notes"] = payload.notes
+
+    order = client.order.create(order_payload)
+
+    return {
+        "order": order,
+        "razorpay_key_id": RAZORPAY_KEY_ID,
+        "amount_rupees": _quantize(amount_rupees),
+    }
+
+
+@razorpay_router.post("/verify-payment")
+async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
+    """Record a Razorpay test payment as successful and persist it."""
+    if not payload.razorpay_payment_id or not payload.razorpay_order_id:
+        raise HTTPException(status_code=400, detail="razorpay_payment_id and razorpay_order_id are required")
+
+    amount_rupees = Decimal(str(payload.amount_rupees)) if payload.amount_rupees is not None else Decimal("0")
+    if amount_rupees < 0:
+        raise HTTPException(status_code=400, detail="amount_rupees cannot be negative")
+
+    amount_rupees = amount_rupees.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    discount_value = Decimal(str(payload.discount_applied)) if payload.discount_applied is not None else Decimal("0")
+    discount_value = discount_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    if payload.gst is not None:
+        gst_value = Decimal(str(payload.gst)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    elif amount_rupees:
+        gst_value = (amount_rupees * Decimal("0.18")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    else:
+        gst_value = Decimal("0.00")
+
+    method = (payload.method or "upi").lower()
+    idempotency_key = payload.idempotency_key or f"idemp_{payload.razorpay_payment_id}"
+    timestamp = datetime.now().isoformat()
+
+    payment_repository.upsert_payment_record({
+        "payment_id": payload.razorpay_payment_id,
+        "order_id": payload.razorpay_order_id,
+        "status": "success",
+        "amount_rupees": _quantize(amount_rupees),
+        "discount_applied": _quantize(discount_value),
+        "gst": _quantize(gst_value),
+        "method": method,
+        "gateway_ref": payload.razorpay_payment_id,
+        "idempotency_key": idempotency_key,
+        "created_at": timestamp,
+    })
+
+    metadata = {
+        "idempotency_key": idempotency_key,
+        "razorpay_signature": payload.razorpay_signature,
+    }
+
+    transaction_payload = {
+        "transaction_id": payload.razorpay_payment_id,
+        "user_id": payload.user_id or "",
+        "amount": _quantize(amount_rupees),
+        "payment_method": method,
+        "status": "success",
+        "gateway_txn_id": payload.razorpay_payment_id,
+        "cashback": "0",
+        "timestamp": timestamp,
+        "order_id": payload.razorpay_order_id,
+        "metadata": json.dumps(metadata),
+    }
+
+    user_key = payload.user_id or payload.razorpay_payment_id
+    _store_transaction_safely(payload.razorpay_payment_id, transaction_payload, user_key, amount_rupees)
+
+    return {"status": "ok", "payment_id": payload.razorpay_payment_id}
+
+
+app.include_router(razorpay_router)
 
 
 @app.post("/payment/process", response_model=PaymentResponse)

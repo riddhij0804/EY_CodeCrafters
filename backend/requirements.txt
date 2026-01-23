@@ -30,6 +30,9 @@ pydantic
 requests
 aiohttp
 
+# --- Payments ---
+razorpay
+
 # --- Environment variables ---
 python-dotenv
 

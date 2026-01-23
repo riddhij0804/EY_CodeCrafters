@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 import uvicorn
 
+
 # Import LangGraph Sales Agent (absolute import for direct uvicorn execution)
 from sales_graph import process_message as process_with_langgraph
 
@@ -248,15 +249,35 @@ async def handle_message(request: MessageRequest):
         # Save to session if available
         if request.session_token:
             try:
+                base_headers = {"X-Session-Token": request.session_token}
+
                 requests.post(
                     "http://localhost:8000/session/update",
-                    headers={"X-Session-Token": request.session_token},
+                    headers=base_headers,
                     json={
-                        "action": "add_message",
+                        "action": "chat_message",
                         "payload": {
-                            "user_message": request.message,
-                            "agent_reply": result["response"],
-                            "intent": result["intent"]
+                            "sender": "user",
+                            "message": request.message,
+                            "metadata": {"intent": result["intent"]}
+                        }
+                    },
+                    timeout=2
+                )
+
+                requests.post(
+                    "http://localhost:8000/session/update",
+                    headers=base_headers,
+                    json={
+                        "action": "chat_message",
+                        "payload": {
+                            "sender": "agent",
+                            "message": result["response"],
+                            "metadata": {
+                                "intent": result["intent"],
+                                "confidence": result["confidence"],
+                                "method": result["method"]
+                            }
                         }
                     },
                     timeout=2

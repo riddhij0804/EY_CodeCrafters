@@ -61,9 +61,9 @@ def store_payment_attempt(user_id: str, attempt_data: dict) -> bool:
         raise RuntimeError("Redis client not initialized")
     
     key = f"payment_attempts:{user_id}"
-    timestamp = datetime.now().isoformat()
+    timestamp = datetime.now().timestamp()
     
-    # Store attempt with timestamp as score
+    # Store attempt with numeric score so Redis ZADD accepts it
     redis_client.zadd(key, {str(attempt_data): timestamp})
     
     # Keep only last 100 attempts

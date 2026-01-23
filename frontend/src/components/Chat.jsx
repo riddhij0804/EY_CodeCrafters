@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Check, CheckCheck, Phone, Video, MoreVertical, Mic, MicOff, User, X } from 'lucide-react';
+import { Send, Check, CheckCheck, Phone, Video, MoreVertical, Mic, MicOff, User, X, CreditCard } from 'lucide-react';
+import { createRazorpayOrder, verifyRazorpayPayment } from '../services/paymentService';
 
 const SESSION_API = 'http://localhost:8000';
 const SALES_API = 'http://localhost:8010';
@@ -16,9 +17,12 @@ const Chat = () => {
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isRazorpayReady, setIsRazorpayReady] = useState(false);
+  const [isPaymentProcessing, setIsPaymentProcessing] = useState(false);
   const messagesEndRef = useRef(null);
   const recognitionRef = useRef(null);
   const transcriptRef = useRef('');
+  const paymentInFlightRef = useRef(false);
 
   // Session Management Functions
   const startOrRestoreSession = async (phone) => {
@@ -153,6 +157,30 @@ const Chat = () => {
     }
   }, []);
 
+  useEffect(() => {
+    if (window.Razorpay) {
+      setIsRazorpayReady(true);
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    script.onload = () => setIsRazorpayReady(true);
+    script.onerror = () => {
+      console.error('Failed to load Razorpay checkout script');
+      setIsRazorpayReady(false);
+    };
+
+    document.body.appendChild(script);
+
+    return () => {
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
+    };
+  }, []);
+
   // Mock agent responses
   const mockAgentResponses = [
     "Sure! Let me check the best options for you.",
@@ -163,6 +191,162 @@ const Chat = () => {
     "I'm checking our inventory for you...",
     "Based on your preferences, I have some perfect options!"
   ];
+
+  const initiateRazorpayPayment = async (amount) => {
+    if (!sessionToken) {
+      alert('Start a chat session before initiating payment.');
+      return;
+    }
+
+    if (!window.Razorpay || !isRazorpayReady) {
+      alert('Razorpay checkout is still loading. Please wait a moment and try again.');
+      return;
+    }
+
+    const parsedAmount = Number(amount);
+    if (Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+      alert('Please enter a valid amount in rupees.');
+      return;
+    }
+
+    setIsPaymentProcessing(true);
+    paymentInFlightRef.current = true;
+
+    try {
+      const orderResponse = await createRazorpayOrder({
+        amount_rupees: parsedAmount,
+        currency: 'INR',
+        notes: {
+          session_id: sessionInfo?.session_id || '',
+          phone: sessionInfo?.phone || '',
+        },
+      });
+
+      const options = {
+        key: orderResponse.razorpay_key_id,
+        amount: orderResponse.order.amount,
+        currency: orderResponse.order.currency,
+        name: 'EY CodeCrafters',
+        description: 'AI Sales Agent Order',
+        order_id: orderResponse.order.id,
+        prefill: {
+          name: sessionInfo?.data?.customer_name || sessionInfo?.phone || 'Customer',
+          email: sessionInfo?.data?.email || 'test@example.com',
+          contact: sessionInfo?.phone || '',
+        },
+        theme: { color: '#008069' },
+        modal: {
+          ondismiss: async () => {
+            if (paymentInFlightRef.current) {
+              const infoText = 'ℹ️ Razorpay checkout was closed before completing the payment.';
+              const infoMessage = {
+                id: Date.now() + Math.random(),
+                text: infoText,
+                sender: 'agent',
+                timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                status: 'read',
+              };
+              setMessages((prev) => [...prev, infoMessage]);
+              await saveChatMessage('agent', infoText);
+            }
+            paymentInFlightRef.current = false;
+            setIsPaymentProcessing(false);
+          },
+        },
+        handler: async (response) => {
+          try {
+            await verifyRazorpayPayment({
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_signature: response.razorpay_signature,
+              amount_rupees: parsedAmount,
+              user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone,
+              method: 'razorpay',
+            });
+
+            const successMessage = {
+              id: Date.now() + Math.random(),
+              text: `✅ Payment of ₹${parsedAmount} received!\nPayment ID: ${response.razorpay_payment_id}`,
+              sender: 'agent',
+              timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+              status: 'read',
+            };
+            setMessages((prev) => [...prev, successMessage]);
+            await saveChatMessage('agent', successMessage.text);
+          } catch (verifyError) {
+            console.error('Payment verification failed:', verifyError);
+            const failureText = `⚠️ Payment captured but verification failed. Please contact support. (${verifyError.message || 'Unknown error'})`;
+            const failMessage = {
+              id: Date.now() + Math.random(),
+              text: failureText,
+              sender: 'agent',
+              timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+              status: 'read',
+            };
+            setMessages((prev) => [...prev, failMessage]);
+            await saveChatMessage('agent', failureText);
+          } finally {
+            paymentInFlightRef.current = false;
+            setIsPaymentProcessing(false);
+          }
+        },
+      };
+
+      const razorpayInstance = new window.Razorpay(options);
+      razorpayInstance.on('payment.failed', async (failure) => {
+        console.error('Razorpay payment failed:', failure);
+        const failureText = `❌ Payment failed: ${failure.error?.description || 'Unknown error'}`;
+        const failMessage = {
+          id: Date.now() + Math.random(),
+          text: failureText,
+          sender: 'agent',
+          timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          status: 'read',
+        };
+        setMessages((prev) => [...prev, failMessage]);
+        await saveChatMessage('agent', failureText);
+        paymentInFlightRef.current = false;
+        setIsPaymentProcessing(false);
+      });
+
+      razorpayInstance.open();
+    } catch (error) {
+      console.error('Failed to initiate Razorpay payment:', error);
+      const errorText = `❌ Unable to start Razorpay checkout: ${error.message || 'Unknown error'}`;
+      const failMessage = {
+        id: Date.now() + Math.random(),
+        text: errorText,
+        sender: 'agent',
+        timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+        status: 'read',
+      };
+      setMessages((prev) => [...prev, failMessage]);
+      await saveChatMessage('agent', errorText);
+      paymentInFlightRef.current = false;
+      setIsPaymentProcessing(false);
+    }
+  };
+
+  const handlePaymentClick = async () => {
+    if (!sessionToken) {
+      alert('Start the chat first so we know who to charge.');
+      return;
+    }
+
+    if (!isRazorpayReady) {
+      alert('Razorpay checkout is still loading. Please try again in a moment.');
+      return;
+    }
+
+    const defaultAmount = sessionInfo?.data?.cart_total || '499';
+    const amountInput = window.prompt('Enter payment amount (INR)', defaultAmount);
+
+    if (!amountInput) {
+      return;
+    }
+
+    await initiateRazorpayPayment(amountInput);
+  };
 
   const handleSendMessage = async () => {
     if (!inputText.trim() || !sessionToken) return;
@@ -488,6 +672,14 @@ const Chat = () => {
               placeholder="Type a message"
               className="flex-1 bg-transparent outline-none text-sm placeholder:text-gray-500"
             />
+            <button
+              onClick={handlePaymentClick}
+              disabled={!sessionToken || !isRazorpayReady || isPaymentProcessing}
+              className={`transition-colors ${(!sessionToken || !isRazorpayReady || isPaymentProcessing) ? 'text-gray-300 cursor-not-allowed' : 'text-gray-500 hover:text-gray-700'}`}
+              title={isPaymentProcessing ? 'Processing payment...' : 'Collect payment via Razorpay'}
+            >
+              <CreditCard className="w-6 h-6" />
+            </button>
             <button 
               onClick={toggleVoiceRecording}
               className={`transition-colors ${
