@@ -21,6 +21,10 @@ except ImportError:  # pragma: no cover - dependency managed via requirements
 
 import redis_utils
 import payment_repository
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+import orders_repository
 
 app = FastAPI(
     title="Payment Agent",
@@ -402,6 +406,22 @@ async def process_payment(request: PaymentRequest):
             if loyalty_result.get('tier_upgraded'):
                 new_tier = loyalty_result.get('current_tier')
                 response_message += f" 🏆 Upgraded to {new_tier}!"
+        
+        # Register order if order_id is provided (create basic order record for tracking)
+        if request.order_id:
+            try:
+                # Create minimal order record with payment info
+                orders_repository.upsert_order_record({
+                    'order_id': request.order_id,
+                    'customer_id': str(request.user_id),
+                    'items': json.dumps([]),  # Empty items for now (frontend will have details)
+                    'total_amount': round(request.amount, 2),
+                    'status': 'placed',
+                    'created_at': datetime.now().isoformat()
+                })
+                logger.info(f"✅ Order registered: {request.order_id} (payment: {transaction_id})")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to register order {request.order_id}: {e}")
         
         return PaymentResponse(
             success=True,

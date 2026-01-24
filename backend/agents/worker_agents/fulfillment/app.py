@@ -27,6 +27,10 @@ import logging
 import httpx
 import redis_utils
 import json
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+import orders_repository
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -877,6 +881,76 @@ async def api_get_fulfillment(order_id: str):
     """Retrieve fulfillment record for an order."""
     fulfillment_data = redis_utils.get_fulfillment(order_id)
     if not fulfillment_data:
+        # Fallback: Check if order exists in orders.csv via orders_repository
+        logger.error(f"📦 Order {order_id} not in Redis, checking orders.csv...")
+        try:
+            import csv
+            from pathlib import Path
+            
+            # Check orders.csv directly
+            orders_file = Path(__file__).parent.parent.parent.parent / "data" / "orders.csv"
+            logger.error(f"   Checking file: {orders_file}")
+            logger.error(f"   File exists: {orders_file.exists()}")
+            
+            if orders_file.exists():
+                with open(orders_file, 'r', encoding='utf-8', newline='') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if row and row.get('order_id', '').strip() == order_id:
+                            logger.error(f"✅ FOUND order in CSV: {order_id}")
+                            
+                            # Map order status to fulfillment status
+                            order_status = row.get('status', 'placed').lower()
+                            status_map = {
+                                'placed': FulfillmentStatus.PROCESSING,
+                                'confirmed': FulfillmentStatus.PROCESSING,
+                                'processing': FulfillmentStatus.PROCESSING,
+                                'packed': FulfillmentStatus.PACKED,
+                                'shipped': FulfillmentStatus.SHIPPED,
+                                'out_for_delivery': FulfillmentStatus.OUT_FOR_DELIVERY,
+                                'delivered': FulfillmentStatus.DELIVERED,
+                                'cancelled': FulfillmentStatus.CANCELLED,
+                                'returned': FulfillmentStatus.RETURNED
+                            }
+                            fulfillment_status = status_map.get(order_status, FulfillmentStatus.PROCESSING)
+                            
+                            # Use actual created_at from CSV or current time
+                            created_at = row.get('created_at', datetime.utcnow().isoformat())
+                            
+                            # Calculate ETA based on status
+                            if fulfillment_status == FulfillmentStatus.DELIVERED:
+                                eta = created_at  # Already delivered
+                            elif fulfillment_status in [FulfillmentStatus.CANCELLED, FulfillmentStatus.RETURNED]:
+                                eta = created_at  # No ETA for cancelled/returned
+                            elif fulfillment_status == FulfillmentStatus.SHIPPED:
+                                eta = (datetime.utcnow() + timedelta(days=1)).isoformat()
+                            else:
+                                eta = (datetime.utcnow() + timedelta(days=3)).isoformat()
+                            
+                            synthetic = {
+                                'fulfillment_id': f'FUL-{order_id}-001',
+                                'order_id': order_id,
+                                'current_status': fulfillment_status,
+                                'tracking_id': f'TRK-{order_id}',
+                                'courier_partner': CourierPartner.LOCAL,
+                                'eta': eta,
+                                'created_at': created_at
+                            }
+                            fulfillment = FulfillmentRecord(**synthetic)
+                            logger.error(f"   Returning fulfillment with status: {fulfillment_status}")
+                            return FulfillmentResponse(
+                                success=True,
+                                message=f"Order {order_status}",
+                                fulfillment=fulfillment
+                            )
+                logger.error(f"   Order NOT found after scanning CSV")
+            else:
+                logger.error(f"   CSV file not found at {orders_file}")
+                
+        except Exception as e:
+            logger.error(f"❌ Exception: {type(e).__name__}: {e}", exc_info=True)
+        
+        logger.error(f"   Raising 404")
         raise HTTPException(status_code=404, detail=f"Fulfillment not found for order {order_id}")
     
     fulfillment = FulfillmentRecord(**fulfillment_data)
