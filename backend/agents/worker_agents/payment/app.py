@@ -12,6 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import json
 import logging
 import os
+import requests
 print(">>> Razorpay router loaded")
 try:
     import razorpay
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+LOYALTY_SERVICE_URL = os.getenv("LOYALTY_SERVICE_URL", "http://localhost:8002")
 
 razorpay_client = None
 razorpay_router = APIRouter(prefix="/payment/razorpay", tags=["Razorpay"])
@@ -375,6 +377,31 @@ async def process_payment(request: PaymentRequest):
             "amount": request.amount,
             "status": "success"
         })
+        # Step 7: Award loyalty points after successful payment
+        loyalty_result = None
+        try:
+            # Call loyalty service to earn points (1 point per ₹10 spent)
+            loyalty_response = requests.post(
+                f"{LOYALTY_SERVICE_URL}/loyalty/earn-from-purchase",
+                params={"user_id": request.user_id, "amount_spent": request.amount},
+                timeout=5
+            )
+            if loyalty_response.ok:
+                loyalty_result = loyalty_response.json()
+                logger.info(f"✅ Loyalty points awarded: {loyalty_result.get('total_points_earned', 0)} points to user {request.user_id}")
+            else:
+                logger.warning(f"⚠️  Loyalty service returned {loyalty_response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to award loyalty points: {e}")
+        
+        # Build response message
+        response_message = f"{gateway_response['message']}. Cashback: ₹{cashback}"
+        if loyalty_result and loyalty_result.get('success'):
+            points_earned = loyalty_result.get('total_points_earned', 0)
+            response_message += f" | Earned {points_earned} loyalty points!"
+            if loyalty_result.get('tier_upgraded'):
+                new_tier = loyalty_result.get('current_tier')
+                response_message += f" 🏆 Upgraded to {new_tier}!"
         
         return PaymentResponse(
             success=True,
@@ -383,6 +410,7 @@ async def process_payment(request: PaymentRequest):
             payment_method=request.payment_method,
             gateway_txn_id=gateway_response["gateway_txn_id"],
             cashback=cashback,
+            message=response_message
             message=f"{gateway_response['message']}. Cashback: ₹{cashback}",
             timestamp=datetime.now().isoformat(),
             order_id=request.order_id
