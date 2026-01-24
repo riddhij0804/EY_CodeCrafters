@@ -430,8 +430,7 @@ async def process_payment(request: PaymentRequest):
             payment_method=request.payment_method,
             gateway_txn_id=gateway_response["gateway_txn_id"],
             cashback=cashback,
-            message=response_message
-            message=f"{gateway_response['message']}. Cashback: ₹{cashback}",
+            message=response_message,
             timestamp=datetime.now().isoformat(),
             order_id=request.order_id
         )

@@ -77,7 +77,7 @@ const Chat = () => {
             sessionStore.setPhone(phone);
 
             // Extract user_id and fetch loyalty points
-            const user_id = restoreData.session.data?.user_id || restoreData.session.user_id || '101';
+            const user_id = restoreData.session.customer_id || restoreData.session.data?.user_id || restoreData.session.user_id || '101';
             setUserId(user_id);
             await fetchLoyaltyPoints(user_id);
 
@@ -120,7 +120,7 @@ const Chat = () => {
       setShowPhoneInput(false);
 
       // Extract user_id and fetch loyalty points
-      const user_id = data.session.data?.user_id || data.session.user_id || '101';
+      const user_id = data.session.customer_id || data.session.data?.user_id || data.session.user_id || '101';
       setUserId(user_id);
       await fetchLoyaltyPoints(user_id);
 
@@ -536,7 +536,7 @@ const Chat = () => {
       const payload = {
         message: messageText,
         session_token: sessionToken,
-        metadata: { user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone }
+        metadata: { user_id: sessionInfo?.customer_id || sessionInfo?.phone }
       };
 
       const resp = await fetch(`${SALES_API}/api/message`, {

@@ -855,16 +855,16 @@ async def call_loyalty_worker(state: SalesAgentState) -> SalesAgentState:
                 best_promo = promo_data.get("best_promotion", {})
                 state["response"] = (
                     f"{tier_emoji.get(tier, '🏅')} {tier} Tier Member\n\n"
-                    f"💰 You have {points} loyalty points (₹{points} value)\n"
+                    f"💰 You have {points} loyalty points (₹" + str(points) + " value)\n"
                     f"🎁 Tier Discount: {benefits.get('discount_percent', 0)}% off all purchases\n\n"
                     f"🎉 Active Offer: {best_promo.get('name', 'N/A')}\n"
-                    f"💸 Save {best_promo.get('discount', 0)}% on purchases above ₹{best_promo.get('min_purchase', 0)}\n\n"
+                    f"💸 Save {best_promo.get('discount', 0)}% on purchases above ₹" + str(best_promo.get('min_purchase', 0)) + "\n\n"
                     f"{f'🚀 {points_to_next} points to {next_tier} tier!' if next_tier else '⭐ Maximum tier reached!'}"
                 )
             else:
                 state["response"] = (
                     f"{tier_emoji.get(tier, '🏅')} {tier} Tier Member\n\n"
-                    f"💰 You have {points} points (₹{points} value)\n"
+                    f"💰 You have {points} points (₹" + str(points) + " value)\n"
                     f"🎁 Tier Discount: {benefits.get('discount_percent', 0)}% off\n"
                     f"{'🚀 Free Shipping Enabled!' if benefits.get('free_shipping') else ''}\n\n"
                     f"{f'🚀 {points_to_next} points to {next_tier}!' if next_tier else '⭐ Maximum tier!'}\n\n"
@@ -875,19 +875,19 @@ async def call_loyalty_worker(state: SalesAgentState) -> SalesAgentState:
             # No cart total, just show tier status
             state["response"] = (
                 f"{tier_emoji.get(tier, '🏅')} {tier} Tier Loyalty Member\n\n"
-                f"💰 Points Balance: {points} (₹{points} value)\n"
+                f"💰 Points Balance: {points} (₹" + str(points) + " value)\n"
                 f"🎁 Tier Benefits:\n"
                 f"  • {benefits.get('discount_percent', 0)}% discount on all purchases\n"
                 f"  • {'✅' if benefits.get('free_shipping') else '❌'} Free Shipping\n"
                 f"  • Birthday Bonus: {benefits.get('birthday_bonus', 0)} points\n"
-                f"  • Points Multiplier: {benefits.get('points_multiplier', 1.0)}x\n\n"
-                f"{f'🚀 Earn {points_to_next} more points to reach {next_tier} tier!' if next_tier else '⭐ You\'re at the highest tier!'}\n\n"
-                f"📦 Earn 1 point per ₹10 spent\n"
-                f"💡 Points never expire!\n\n"
-                f"Available Coupons:\n"
-                f"• ABFRL10 - 10% off on ₹500+\n"
-                f"• ABFRL20 - 20% off on ₹1000+\n"
-                f"• WELCOME25 - 25% off on ₹1500+"
+                f"  • Points Multiplier: {benefits.get('points_multiplier', 1.0)}x\n\n" +
+                ("🚀 Earn " + str(points_to_next) + " more points to reach " + str(next_tier) + " tier!" if next_tier else "⭐ You're at the highest tier!") + "\n\n"
+                "📦 Earn 1 point per ₹10 spent\n"
+                "💡 Points never expire!\n\n"
+                "Available Coupons:\n"
+                "• ABFRL10 - 10% off on ₹500+\n"
+                "• ABFRL20 - 20% off on ₹1000+\n"
+                "• WELCOME25 - 25% off on ₹1500+"
             )
         
         state["cards"] = []
@@ -898,6 +898,8 @@ async def call_loyalty_worker(state: SalesAgentState) -> SalesAgentState:
     except Exception as e:
         logger.error(f"❌ Loyalty worker failed: {e}")
         state["response"] = "I'm having trouble fetching your loyalty details right now. Please try again."
+    
+    return state
 async def call_fulfillment_worker(state: SalesAgentState) -> SalesAgentState:
     """Check order fulfillment status and tracking."""
     logger.info("📞 Calling Fulfillment Worker...")
