@@ -148,6 +148,7 @@ class VertexIntentDetector:
    - gifting: Buying a gift for someone
    - comparison: Comparing multiple products
    - trend: Asking about trends/popular items
+   - loyalty: Asking about loyalty points, rewards, coupons, offers, discounts
    - social_validation: Asking what others buy/like, community insights, what's popular in their circle
    - support: Help with order/return/issue
    - fallback: Unclear intent
@@ -177,7 +178,7 @@ class VertexIntentDetector:
 
 ### Response Format (valid JSON only):
 {{
-  "intent": "recommendation|inventory|payment|gifting|comparison|trend|social_validation|support|fallback",
+  "intent": "recommendation|inventory|payment|gifting|comparison|trend|loyalty|social_validation|support|fallback",
   "confidence": 0.95,
   "entities": {{
     "category": "footwear",
@@ -421,6 +422,16 @@ Respond with ONLY the JSON object, no additional text."""
             intent = IntentType.TREND
             confidence = 0.85
         
+        # Loyalty/rewards intent
+        elif re.search(r"\b(loyalty|points|reward|coupon|discount|offer|promo|cashback|redeem)\b", text):
+            intent = "loyalty"
+            confidence = 0.9
+            # Extract coupon code if present
+            coupon_match = re.search(r"\b([A-Z]{3,10}\d{1,3})\b", user_message)
+            if coupon_match:
+                entities["coupon_code"] = coupon_match.group(1)
+        
+        # Support/help
         # Support/help (generic)
         elif re.search(r"\b(help|support|problem|issue|return|refund|cancel|complaint)\b", text):
             intent = IntentType.SUPPORT

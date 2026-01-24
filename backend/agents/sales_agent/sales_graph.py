@@ -306,6 +306,29 @@ class SalesOrchestrator:
         holds = await self.create_inventory_holds(items, session_id=flow['order_id'])
         flow['steps']['holds'] = holds
 
+        # 3) calculate discounted total with loyalty and coupons
+        original_total = sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items])
+        
+        # Apply automatic discounts via loyalty service
+        try:
+            discount_url = f"{WORKER_SERVICES['loyalty']}/loyalty/calculate-discounts"
+            discount_payload = {
+                "user_id": customer_id,
+                "cart_total": original_total
+            }
+            discount_response = requests.post(discount_url, json=discount_payload, timeout=5)
+            discount_response.raise_for_status()
+            discount_data = discount_response.json()
+            
+            discounted_total = discount_data.get('final_total', original_total)
+            applied_discounts = discount_data.get('message', 'No discounts applied')
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to calculate discounts: {e}")
+            discounted_total = original_total
+            applied_discounts = 'Discount calculation failed'
+        
+        # 4) process payment with discounted amount
+        payment_resp = await self.process_payment(customer_id, discounted_total, payment_method)
         # Extract first successful hold_id if available
         inventory_hold_id = None
         for h in holds:
@@ -319,6 +342,11 @@ class SalesOrchestrator:
         total = sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items])
         payment_resp = await self.process_payment(customer_id, total, payment_method)
         flow['steps']['payment'] = payment_resp
+        flow['steps']['discounts'] = {
+            'original_total': original_total,
+            'discounted_total': discounted_total,
+            'applied_discounts': applied_discounts
+        }
         if payment_resp.get('status') in ('failed', False):
             flow['status'] = 'payment_failed'
             return flow
@@ -505,6 +533,7 @@ def route_by_intent(state: SalesAgentState) -> Literal[
         "gifting": "recommendation_worker",  # Gifting uses recommendation service
         "inventory": "inventory_worker",
         "payment": "payment_worker",
+        "loyalty": "loyalty_worker",  # Loyalty points and coupons
         "comparison": "recommendation_worker",  # Comparison uses recommendation
         "trend": "recommendation_worker",  # Trends use recommendation
         # Route order tracking and support to fulfillment (not post-purchase)
@@ -774,6 +803,101 @@ async def call_payment_worker(state: SalesAgentState) -> SalesAgentState:
     return state
 
 
+async def call_loyalty_worker(state: SalesAgentState) -> SalesAgentState:
+    """Call loyalty microservice for points and offers."""
+    logger.info("📞 Calling Loyalty Worker...")
+    
+    state["worker_service"] = "loyalty"
+    state["worker_url"] = WORKER_SERVICES["loyalty"]
+    
+    try:
+        # Extract customer ID from metadata
+        customer_id = None
+        phone = state.get("metadata", {}).get("phone")
+        
+        if phone and phone in _customer_phone_map:
+            customer_id = _customer_phone_map[phone]
+            logger.info(f"✅ Resolved phone {phone} to customer_id {customer_id}")
+        
+        if not customer_id:
+            customer_id = state.get("metadata", {}).get("user_id", "101")  # Default fallback
+            logger.warning(f"⚠️  Using fallback customer_id: {customer_id}")
+        
+        # Get user's complete tier information (points + tier + benefits)
+        url = f"{WORKER_SERVICES['loyalty']}/loyalty/tier/{customer_id}"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        
+        tier_data = response.json()
+        points = tier_data.get("points", 0)
+        tier = tier_data.get("tier", "Bronze")
+        benefits = tier_data.get("benefits", {})
+        next_tier = tier_data.get("next_tier")
+        points_to_next = tier_data.get("points_to_next", 0)
+        
+        # Tier emojis
+        tier_emoji = {"Bronze": "🥉", "Silver": "🥈", "Gold": "🥇", "Platinum": "💎"}
+        
+        # Check for active promotions
+        cart_total = state.get("metadata", {}).get("cart_total", 0)
+        if cart_total > 0:
+            promo_url = f"{WORKER_SERVICES['loyalty']}/loyalty/check-promotions"
+            promo_payload = {
+                "user_id": customer_id,
+                "cart_total": cart_total
+            }
+            promo_response = requests.post(promo_url, json=promo_payload, timeout=5)
+            promo_response.raise_for_status()
+            promo_data = promo_response.json()
+            
+            # Build response with promotions
+            if promo_data.get("applicable_promotions"):
+                best_promo = promo_data.get("best_promotion", {})
+                state["response"] = (
+                    f"{tier_emoji.get(tier, '🏅')} {tier} Tier Member\n\n"
+                    f"💰 You have {points} loyalty points (₹{points} value)\n"
+                    f"🎁 Tier Discount: {benefits.get('discount_percent', 0)}% off all purchases\n\n"
+                    f"🎉 Active Offer: {best_promo.get('name', 'N/A')}\n"
+                    f"💸 Save {best_promo.get('discount', 0)}% on purchases above ₹{best_promo.get('min_purchase', 0)}\n\n"
+                    f"{f'🚀 {points_to_next} points to {next_tier} tier!' if next_tier else '⭐ Maximum tier reached!'}"
+                )
+            else:
+                state["response"] = (
+                    f"{tier_emoji.get(tier, '🏅')} {tier} Tier Member\n\n"
+                    f"💰 You have {points} points (₹{points} value)\n"
+                    f"🎁 Tier Discount: {benefits.get('discount_percent', 0)}% off\n"
+                    f"{'🚀 Free Shipping Enabled!' if benefits.get('free_shipping') else ''}\n\n"
+                    f"{f'🚀 {points_to_next} points to {next_tier}!' if next_tier else '⭐ Maximum tier!'}\n\n"
+                    f"💡 Use points or coupons at checkout!\n"
+                    f"Coupons: ABFRL10, ABFRL20, WELCOME25"
+                )
+        else:
+            # No cart total, just show tier status
+            state["response"] = (
+                f"{tier_emoji.get(tier, '🏅')} {tier} Tier Loyalty Member\n\n"
+                f"💰 Points Balance: {points} (₹{points} value)\n"
+                f"🎁 Tier Benefits:\n"
+                f"  • {benefits.get('discount_percent', 0)}% discount on all purchases\n"
+                f"  • {'✅' if benefits.get('free_shipping') else '❌'} Free Shipping\n"
+                f"  • Birthday Bonus: {benefits.get('birthday_bonus', 0)} points\n"
+                f"  • Points Multiplier: {benefits.get('points_multiplier', 1.0)}x\n\n"
+                f"{f'🚀 Earn {points_to_next} more points to reach {next_tier} tier!' if next_tier else '⭐ You\'re at the highest tier!'}\n\n"
+                f"📦 Earn 1 point per ₹10 spent\n"
+                f"💡 Points never expire!\n\n"
+                f"Available Coupons:\n"
+                f"• ABFRL10 - 10% off on ₹500+\n"
+                f"• ABFRL20 - 20% off on ₹1000+\n"
+                f"• WELCOME25 - 25% off on ₹1500+"
+            )
+        
+        state["cards"] = []
+        state["metadata"]["loyalty_points"] = points
+        state["metadata"]["loyalty_tier"] = tier
+        logger.info(f"✅ Loyalty status retrieved: {tier} tier, {points} points")
+        
+    except Exception as e:
+        logger.error(f"❌ Loyalty worker failed: {e}")
+        state["response"] = "I'm having trouble fetching your loyalty details right now. Please try again."
 async def call_fulfillment_worker(state: SalesAgentState) -> SalesAgentState:
     """Check order fulfillment status and tracking."""
     logger.info("📞 Calling Fulfillment Worker...")
@@ -1016,6 +1140,7 @@ def create_sales_agent_graph() -> StateGraph:
     workflow.add_node("recommendation_worker", call_recommendation_worker)
     workflow.add_node("inventory_worker", call_inventory_worker)
     workflow.add_node("payment_worker", call_payment_worker)
+    workflow.add_node("loyalty_worker", call_loyalty_worker)
     workflow.add_node("fulfillment_worker", call_fulfillment_worker)
     workflow.add_node("virtual_circles_worker", call_virtual_circles_worker)
     workflow.add_node("fallback_worker", call_fallback_worker)
@@ -1031,6 +1156,7 @@ def create_sales_agent_graph() -> StateGraph:
             "recommendation_worker": "recommendation_worker",
             "inventory_worker": "inventory_worker",
             "payment_worker": "payment_worker",
+            "loyalty_worker": "loyalty_worker",
             "comparison_worker": "recommendation_worker",
             "trend_worker": "recommendation_worker",
             "gifting_worker": "recommendation_worker",
@@ -1045,6 +1171,7 @@ def create_sales_agent_graph() -> StateGraph:
     workflow.add_edge("recommendation_worker", END)
     workflow.add_edge("inventory_worker", END)
     workflow.add_edge("payment_worker", END)
+    workflow.add_edge("loyalty_worker", END)
     workflow.add_edge("fulfillment_worker", END)
     workflow.add_edge("virtual_circles_worker", END)
     workflow.add_edge("fallback_worker", END)
