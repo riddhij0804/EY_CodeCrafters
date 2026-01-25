@@ -105,6 +105,10 @@ try:
     customers_df = pd.read_csv(DATA_PATH / "customers.csv")
     orders_df = pd.read_csv(DATA_PATH / "orders.csv")
     inventory_df = pd.read_csv(DATA_PATH / "inventory.csv")
+
+    # Normalize column naming differences between generated datasets
+    if "quantity" in inventory_df.columns and "qty" not in inventory_df.columns:
+        inventory_df = inventory_df.rename(columns={"quantity": "qty"})
     
     logger.info(f"✅ Loaded {len(products_df)} products")
     logger.info(f"✅ Loaded {len(customers_df)} customers")

@@ -13,13 +13,16 @@ Endpoints:
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import uvicorn
 import uuid
 from datetime import datetime
 import redis_utils
 import os
 from groq import Groq
+
+# Type aliases
+ProductDict = Dict[str, Any]
 
 # Initialize Groq AI client
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -83,71 +86,156 @@ class FitFeedbackRequest(BaseModel):
 # AI STYLING ENGINE
 # ==========================================
 
-def get_ai_outfit_suggestions(product_name: str, category: str, color: str = None, brand: str = None, purchased_sku: str = None) -> Dict:
-    """Use AI to generate personalized outfit suggestions from actual product catalog"""
-    
-    # Get products from our catalog to recommend
-    available_products = redis_utils.get_all_products()
-    
-    # Sample products by category for recommendations
-    apparel_products = available_products[available_products['category'] == 'Apparel'].sample(n=min(10, len(available_products)))
-    footwear_products = available_products[available_products['category'] == 'Footwear'].sample(n=min(5, len(available_products)))
-    
-    # Build product list for AI context
-    product_context = "Available products in our store:\n"
-    product_context += "\nApparel:\n"
-    for _, p in apparel_products.iterrows():
-        product_context += f"- {p['ProductDisplayName']} (SKU: {p['sku']}, Price: ₹{p['price']})\n"
-    
-    product_context += "\nFootwear:\n"
-    for _, p in footwear_products.iterrows():
-        product_context += f"- {p['ProductDisplayName']} (SKU: {p['sku']}, Price: ₹{p['price']})\n"
-    
-    color_info = f", color: {color}" if color else ""
-    brand_info = f", brand: {brand}" if brand else ""
-    
-    prompt = f"""You are a fashion stylist for an e-commerce store. Customer just purchased: {product_name} (category: {category}{color_info}{brand_info}).
+def _build_complementary_specs(product: ProductDict) -> List[Dict[str, Any]]:
+    """Derive complementary product filters based on the purchased item."""
 
-{product_context}
+    name_lower = (product.get("name") or "").lower()
+    subcategory_lower = (product.get("subcategory") or "").lower()
+    category_lower = (product.get("category") or "").lower()
 
-Recommend products from ONLY the list above. Return in this EXACT JSON format:
-{{
-    "recommended_products": [
-        {{"sku": "SKU000XXX", "name": "Product Name", "reason": "why it pairs well"}},
-        {{"sku": "SKU000XXX", "name": "Product Name", "reason": "why it pairs well"}}
-    ],
-    "styling_tips": ["tip 1", "tip 2", "tip 3"]
-}}
+    specs: List[Dict[str, Any]] = []
 
-Rules:
-- Recommend 3-5 products from the available list ONLY
-- Include SKU, product name, and styling reason
-- Be specific about how items pair together
-- Consider Indian fashion context
-- Only return valid JSON"""
+    if any(keyword in name_lower for keyword in ["jean", "denim"]) or "bottom" in subcategory_lower:
+        specs = [
+            {
+                "category": "Apparel",
+                "keywords": ["topwear", "t-shirt", "shirt", "tee"],
+                "reason": "{item} sharpens the upper half and lets your {purchase} stay the hero piece.",
+            },
+            {
+                "category": "Footwear",
+                "keywords": ["shoe", "sneaker", "trainer"],
+                "reason": "{item} grounds the denim and keeps the palette clean for a weekend-ready look.",
+            },
+            {
+                "category": "Apparel",
+                "keywords": ["jacket", "hoodie", "outerwear", "sweatshirt"],
+                "reason": "Layering with {item} adds structure and warmth without overpowering your {purchase}.",
+            },
+        ]
+    elif "top" in subcategory_lower or any(keyword in name_lower for keyword in ["tee", "shirt", "top"]):
+        specs = [
+            {
+                "category": "Apparel",
+                "keywords": ["bottom", "jean", "trouser", "skirt"],
+                "reason": "{item} balances the proportions of {purchase} and keeps the silhouette streamlined.",
+            },
+            {
+                "category": "Footwear",
+                "keywords": ["shoe", "sneaker", "heel", "loafer"],
+                "reason": "Finish the outfit with {item} to echo the colour accents in {purchase}.",
+            },
+            {
+                "category": "Accessories",
+                "keywords": ["bag", "belt", "cap", "hat"],
+                "reason": "A hint of {item} adds polish and ties the whole look together.",
+            },
+        ]
+    elif "shoe" in name_lower or "footwear" in category_lower:
+        specs = [
+            {
+                "category": "Apparel",
+                "keywords": ["bottom", "jean", "jogger", "track"],
+                "reason": "Offset the sneakers with {item} for an effortless athleisure mood.",
+            },
+            {
+                "category": "Apparel",
+                "keywords": ["topwear", "hoodie", "jacket", "tee"],
+                "reason": "{item} mirrors the sporty energy of your {purchase} and keeps the look cohesive.",
+            },
+            {
+                "category": "Accessories",
+                "keywords": ["bag", "sling", "cap"],
+                "reason": "Add {item} so your footwear stands out while the accessories stay functional.",
+            },
+        ]
+    else:
+        specs = [
+            {
+                "category": "Apparel",
+                "keywords": ["layer", "jacket", "cardigan", "shrug"],
+                "reason": "{item} adds depth and works seamlessly with {purchase} for multiple occasions.",
+            },
+            {
+                "category": "Footwear",
+                "keywords": ["shoe", "sneaker", "loafer", "heel"],
+                "reason": "Pair with {item} to keep the outfit grounded and versatile.",
+            },
+            {
+                "category": "Accessories",
+                "keywords": ["bag", "watch", "belt", "cap"],
+                "reason": "Introduce {item} for a refined finishing touch without overpowering your {purchase}.",
+            },
+        ]
 
-    try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1024
+    return specs
+
+
+def _generate_styling_tips(purchase_name: str, suggestions: List[Dict[str, str]]) -> List[str]:
+    tips: List[str] = []
+
+    if not suggestions:
+        return tips
+
+    tips.append(f"Half-tuck the top pick to showcase the structure of your {purchase_name}.")
+
+    if len(suggestions) >= 2:
+        tips.append(f"Use {suggestions[1]['name']} to keep colours consistent from head to toe.")
+
+    if len(suggestions) >= 3:
+        tips.append(f"Finish with {suggestions[2]['name']} so the outfit transitions from day to evening effortlessly.")
+
+    if not tips:
+        tips.append(f"Let your {purchase_name} shine and keep other pieces streamlined.")
+
+    return tips
+
+
+def get_ai_outfit_suggestions(product: ProductDict) -> Dict:
+    """Curate in-stock outfit suggestions grounded in catalogue and inventory data."""
+
+    purchase_name = product.get("name", "your purchase")
+    purchase_sku = product.get("sku")
+
+    specs = _build_complementary_specs(product)
+    used_skus = {purchase_sku}
+    recommended_products: List[Dict[str, str]] = []
+
+    for spec in specs:
+        matches = redis_utils.find_in_stock_products(
+            category=spec.get("category"),
+            subcategory_keywords=spec.get("keywords"),
+            exclude_skus=used_skus,
+            limit=1
         )
-        
-        import json
-        result = json.loads(response.choices[0].message.content)
-        return result
-        
-    except Exception as e:
-        # Fallback: return products from same category
-        fallback_products = redis_utils.search_products_by_category(category, limit=3)
-        return {
-            "recommended_products": [
-                {"sku": p["sku"], "name": p["name"], "reason": "Complements your purchase"}
-                for p in fallback_products
-            ],
-            "styling_tips": ["Mix and match with your wardrobe", "Layer for different occasions"]
-        }
+        if not matches:
+            continue
+
+        item = matches[0]
+        used_skus.add(item['sku'])
+        reason = spec['reason'].format(item=item['name'], purchase=purchase_name)
+        recommended_products.append({
+            "sku": item['sku'],
+            "name": item['name'],
+            "reason": reason
+        })
+
+    if not recommended_products:
+        # fallback to any in-stock items
+        fallback_items = redis_utils.find_in_stock_products(exclude_skus=used_skus, limit=3)
+        for item in fallback_items:
+            recommended_products.append({
+                "sku": item['sku'],
+                "name": item['name'],
+                "reason": f"{item['name']} is in stock and complements {purchase_name} seamlessly."
+            })
+
+    styling_tips = _generate_styling_tips(purchase_name, recommended_products)
+
+    return {
+        "recommended_products": recommended_products,
+        "styling_tips": styling_tips
+    }
 
 
 def get_care_instructions(material: str) -> Dict:
@@ -325,13 +413,7 @@ async def get_outfit_suggestions_api(request: OutfitRequest):
         if not product_details:
             raise HTTPException(status_code=404, detail="Product not found in catalog")
         
-        suggestions = get_ai_outfit_suggestions(
-            product_details['name'], 
-            product_details['category'],
-            product_details['color'],
-            product_details['brand'],
-            request.product_sku
-        )
+        suggestions = get_ai_outfit_suggestions(product_details)
         
         recommendation_id = f"STY_{uuid.uuid4().hex[:12].upper()}"
         

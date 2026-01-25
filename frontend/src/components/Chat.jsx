@@ -669,7 +669,7 @@ const Chat = () => {
     "Based on your preferences, I have some perfect options!"
   ];
 
-  const initiateRazorpayPayment = async (amount, product = null) => {
+  const initiateRazorpayPayment = async (amount, detailsArg = null) => {
     if (!sessionToken) {
       alert('Start a chat session before initiating payment.');
       return;
@@ -690,7 +690,9 @@ const Chat = () => {
     paymentInFlightRef.current = true;
 
     try {
-      const shippingAddress = details.address || savedAddress;
+      const normalizedDetails = (detailsArg && typeof detailsArg === 'object') ? detailsArg : {};
+      const productDetails = normalizedDetails.product || (normalizedDetails.name || normalizedDetails.sku ? normalizedDetails : null) || pendingCheckoutItem;
+      const shippingAddress = normalizedDetails.address || savedAddress;
       const notes = {
         session_id: sessionInfo?.session_id || '',
         phone: sessionInfo?.phone || '',
@@ -699,14 +701,14 @@ const Chat = () => {
       if (sessionInfo?.data?.customer_id) {
         notes.customer_id = sessionInfo.data.customer_id;
       }
-      if (details.sku) {
-        notes.product_sku = details.sku;
+      if (productDetails?.sku) {
+        notes.product_sku = productDetails.sku;
       }
-      if (details.name) {
-        notes.product_name = details.name;
+      if (productDetails?.name) {
+        notes.product_name = productDetails.name;
       }
-      if (details.source) {
-        notes.checkout_source = details.source;
+      if (normalizedDetails.source) {
+        notes.checkout_source = normalizedDetails.source;
       }
       if (shippingAddress) {
         notes.address_city = shippingAddress.city || '';
@@ -720,8 +722,8 @@ const Chat = () => {
         notes,
       };
 
-      if (details.orderId) {
-        orderPayload.receipt = details.orderId;
+      if (normalizedDetails.orderId) {
+        orderPayload.receipt = normalizedDetails.orderId;
       }
 
       const orderResponse = await createRazorpayOrder(orderPayload);
@@ -731,7 +733,7 @@ const Chat = () => {
         amount: orderResponse.order.amount,
         currency: orderResponse.order.currency,
         name: 'EY CodeCrafters',
-        description: details.name ? `Order for ${details.name}` : 'AI Sales Agent Order',
+        description: productDetails?.name ? `Order for ${productDetails.name}` : 'AI Sales Agent Order',
         order_id: orderResponse.order.id,
         prefill: {
           name: sessionInfo?.data?.customer_name || sessionInfo?.phone || 'Customer',
@@ -774,8 +776,8 @@ const Chat = () => {
             let successText = `✅ Payment of ₹${parsedAmount} received!\nPayment ID: ${response.razorpay_payment_id}`;
             
             // Add product-specific message and rewards
-            if (product) {
-              successText += `\n\n🎉 Purchase Complete!\n📦 ${product.name}\n💰 Amount Paid: ₹${parsedAmount}`;
+            if (productDetails) {
+              successText += `\n\n🎉 Purchase Complete!\n📦 ${productDetails.name || 'Selected item'}\n💰 Amount Paid: ₹${parsedAmount}`;
               
               // Show rewards earned (this will be updated by the payment service)
               successText += `\n\n🎁 Rewards Earned:\n💎 Loyalty points added to your account!\n🏅 Check your updated tier status above.`;
@@ -790,14 +792,14 @@ const Chat = () => {
             };
             setMessages((prev) => [...prev, successMessage]);
             await saveChatMessage('agent', successText);
-            const productLine = details.name ? ` for ${details.name}` : '';
+            const displayName = productDetails?.name || '';
+            const productLine = displayName ? ` for ${displayName}` : '';
             await appendAgentMessage(
               `✅ Payment of ${formatINR(parsedAmount)} received${productLine}!\nPayment ID: ${response.razorpay_payment_id}`
             );
 
-            const productDetails = details.product || pendingCheckoutItem;
-            const orderId = details.orderId || response.razorpay_order_id;
-            const recordedAddress = details.address || savedAddress || null;
+            const orderId = normalizedDetails.orderId || response.razorpay_order_id;
+            const recordedAddress = normalizedDetails.address || savedAddress || null;
 
             if (productDetails) {
               const orderOwner = sessionInfo?.data?.customer_id || sessionInfo?.phone || '';
@@ -813,7 +815,7 @@ const Chat = () => {
                 metadata: {
                   payment_id: response.razorpay_payment_id,
                   razorpay_order_id: response.razorpay_order_id,
-                  checkout_source: details.source || '',
+                  checkout_source: normalizedDetails.source || '',
                   session_id: sessionInfo?.session_id || '',
                 },
                 items: [
@@ -839,7 +841,7 @@ const Chat = () => {
                 orderId,
                 amount: parsedAmount,
                 paymentId: response.razorpay_payment_id,
-                product: productDetails,
+                product: productDetails || undefined,
                 address: recordedAddress,
               });
 
@@ -872,7 +874,7 @@ const Chat = () => {
 
                   if (stylistResponse?.success && (recommendedProducts.length || stylingTips.length)) {
                     await appendAgentMessage(
-                      `✨ Fresh styling ideas for your ${productDetails.name || 'new purchase'}!`,
+                      `👗 Our stylist just walked in with looks for your ${productDetails.name || 'new purchase'}!`,
                       {
                         metadata: {
                           stylist: {
@@ -1038,8 +1040,55 @@ const Chat = () => {
       setMessages(prev => [...prev, discountMsg]);
       await saveChatMessage('agent', discountMessage);
 
-      // Step 3: Process payment
-      await initiateRazorpayPayment(finalPrice.toFixed(2), product);
+      const payableAmount = parsePriceToNumber(finalPrice);
+      const safeAmount = Number.isFinite(payableAmount) && payableAmount > 0
+        ? payableAmount
+        : parsePriceToNumber(product.price);
+
+      if (!Number.isFinite(safeAmount) || safeAmount <= 0) {
+        throw new Error('Unable to determine payable amount');
+      }
+
+      const normalizedQuantity = Number(product.quantity) > 0 ? Number(product.quantity) : 1;
+      const orderId = buildCheckoutOrderId(product.sku || 'ITEM');
+      const normalizedProduct = {
+        ...product,
+        price: safeAmount,
+        rawPrice: product.price,
+        quantity: normalizedQuantity,
+        orderId,
+      };
+
+      setPendingCheckoutItem(normalizedProduct);
+
+      await storeSelectedItemInSession({
+        sku: normalizedProduct.sku,
+        name: normalizedProduct.name,
+        price: safeAmount,
+        quantity: normalizedQuantity,
+      });
+
+      const checkoutPayload = {
+        product: normalizedProduct,
+        amount: safeAmount,
+        orderId,
+        quantity: normalizedQuantity,
+      };
+
+      setIsPaymentProcessing(false);
+
+      const paymentPromptText = `Great! Your payable amount is ${formatINR(safeAmount)}. Tap "Please Pay Here" to add your delivery address and pay securely via Razorpay.`;
+      const paymentPromptMessage = {
+        id: Date.now() + Math.random(),
+        text: paymentPromptText,
+        sender: 'agent',
+        timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+        status: 'read',
+        checkout: checkoutPayload,
+      };
+
+      setMessages((prev) => [...prev, paymentPromptMessage]);
+      await saveChatMessage('agent', paymentPromptText, { checkout: checkoutPayload });
 
     } catch (error) {
       console.error('Purchase error:', error);

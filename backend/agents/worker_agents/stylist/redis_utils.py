@@ -4,7 +4,7 @@ Redis utilities for Stylist Agent
 import redis
 import os
 import pandas as pd
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Iterable
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,8 +20,30 @@ redis_client = redis.from_url(
 ) if REDIS_URL else None
 
 # Load product catalog
-PRODUCTS_CSV = os.path.join(os.path.dirname(__file__), "../../../data/products.csv")
+BASE_DIR = os.path.dirname(__file__)
+PRODUCTS_CSV = os.path.join(BASE_DIR, "../../../data/products.csv")
+INVENTORY_CSV = os.path.join(BASE_DIR, "../../../data/inventory.csv")
+
 products_df = pd.read_csv(PRODUCTS_CSV)
+
+inventory_df = pd.read_csv(INVENTORY_CSV)
+if "qty" in inventory_df.columns and "quantity" not in inventory_df.columns:
+    inventory_df = inventory_df.rename(columns={"qty": "quantity"})
+
+inventory_totals = (
+    inventory_df
+    .groupby("sku", as_index=False)["quantity"]
+    .sum()
+)
+
+# Keep only SKUs that have available quantity across any channel
+in_stock_products_df = (
+    products_df.merge(
+        inventory_totals[inventory_totals["quantity"] > 0],
+        on="sku",
+        how="inner"
+    )
+)
 
 
 def get_product_details(sku: str) -> Optional[Dict]:
@@ -52,13 +74,82 @@ def get_product_details(sku: str) -> Optional[Dict]:
         "subcategory": row['subcategory'],
         "price": row['price'],
         "color": color,
-        "material": material
+        "material": material,
+        "quantity": int(inventory_totals[inventory_totals['sku'] == row['sku']]['quantity'].iloc[0]) if not inventory_totals[inventory_totals['sku'] == row['sku']].empty else 0
     }
 
 
 def get_all_products() -> pd.DataFrame:
     """Get all products from catalog"""
     return products_df
+
+
+def get_in_stock_products() -> pd.DataFrame:
+    """Return merged product + inventory records that still have stock."""
+    return in_stock_products_df.copy()
+
+
+def _build_keyword_mask(series: pd.Series, keywords: Iterable[str]) -> pd.Series:
+    if series.empty:
+        return pd.Series(False, index=series.index)
+    mask = pd.Series(False, index=series.index)
+    for keyword in keywords:
+        keyword_lower = str(keyword).strip().lower()
+        if not keyword_lower:
+            continue
+        mask = mask | series.str.lower().str.contains(keyword_lower, na=False)
+    return mask
+
+
+def find_in_stock_products(
+    category: Optional[str] = None,
+    subcategory_keywords: Optional[Iterable[str]] = None,
+    name_keywords: Optional[Iterable[str]] = None,
+    exclude_skus: Optional[Iterable[str]] = None,
+    limit: int = 3
+) -> List[Dict]:
+    """Lookup in-stock products using loose keyword filters."""
+
+    df = get_in_stock_products()
+
+    if category:
+        df = df[df['category'].str.contains(str(category), case=False, na=False)]
+
+    if subcategory_keywords:
+        sub_mask = _build_keyword_mask(df['subcategory'], subcategory_keywords)
+        name_mask = _build_keyword_mask(df['ProductDisplayName'], subcategory_keywords)
+        df = df[sub_mask | name_mask]
+
+    if name_keywords:
+        name_mask = _build_keyword_mask(df['ProductDisplayName'], name_keywords)
+        df = df[name_mask]
+
+    if exclude_skus:
+        exclude_set = {sku for sku in exclude_skus}
+        df = df[~df['sku'].isin(exclude_set)]
+
+    if df.empty:
+        return []
+
+    sort_columns = [col for col in ['quantity', 'ratings'] if col in df.columns]
+    if sort_columns:
+        df = df.sort_values(by=sort_columns, ascending=[False for _ in sort_columns], na_position='last')
+
+    df_sorted = df.head(limit)
+
+    results: List[Dict] = []
+    for _, row in df_sorted.iterrows():
+        results.append({
+            "sku": row['sku'],
+            "name": row['ProductDisplayName'],
+            "brand": row.get('brand'),
+            "category": row.get('category'),
+            "subcategory": row.get('subcategory'),
+            "price": row.get('price'),
+            "quantity": int(row.get('quantity', 0)),
+        })
+
+    return results
 
 
 def search_products_by_category(category: str, subcategory: str = None, limit: int = 5) -> List[Dict]:
