@@ -30,10 +30,10 @@ export const API_ENDPOINTS = {
   // Loyalty Agent
   LOYALTY: `${API_BASE_URL}:8002`,
   LOYALTY_POINTS: `${API_BASE_URL}:8002/loyalty/points`,
+  LOYALTY_TIER_INFO: `${API_BASE_URL}:8002/loyalty/tier`,
   LOYALTY_APPLY: `${API_BASE_URL}:8002/loyalty/apply`,
   LOYALTY_ADD_POINTS: `${API_BASE_URL}:8002/loyalty/add-points`,
   LOYALTY_VALIDATE_COUPON: `${API_BASE_URL}:8002/loyalty/validate-coupon`,
-  LOYALTY_TIER_INFO: `${API_BASE_URL}:8002/loyalty/tier-info`,
   LOYALTY_PROMOTIONS: `${API_BASE_URL}:8002/loyalty/available-promotions`,
 
   // Payment Agent

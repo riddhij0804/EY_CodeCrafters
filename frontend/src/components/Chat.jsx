@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Check, CheckCheck, Phone, Video, Mic, MicOff, User, X, CreditCard, LifeBuoy } from 'lucide-react';
 import { createRazorpayOrder, verifyRazorpayPayment } from '../services/paymentService';
+import { getTierInfo } from '../services/loyaltyService';
 import API_ENDPOINTS from '../config/api';
 import sessionStore from '../lib/session';
 import salesAgentService from '../services/salesAgentService';
@@ -95,6 +96,9 @@ const Chat = () => {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [showPhoneInput, setShowPhoneInput] = useState(true);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
+  const [loyaltyPoints, setLoyaltyPoints] = useState(0);
+  const [loyaltyTier, setLoyaltyTier] = useState('Bronze');
+  const [userId, setUserId] = useState(null);
 
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -152,13 +156,31 @@ const Chat = () => {
     return String(text).replace(/^\s*["'“”]+|["'“”]+\s*$/g, '').trim();
   };
 
+  // Loyalty Management
+  const fetchLoyaltyPoints = async (user_id) => {
+    try {
+      const result = await getTierInfo(user_id);
+      if (result && result.points !== undefined) {
+        setLoyaltyPoints(result.points);
+        setLoyaltyTier(result.tier || 'Bronze');
+      }
+    } catch (error) {
+      console.error('Failed to fetch loyalty info:', error);
+      // Gracefully handle error - set defaults so UI doesn't break
+      setLoyaltyPoints(0);
+      setLoyaltyTier('Bronze');
+    }
+  };
+
   // Session Management Functions
   const startOrRestoreSession = async (phone) => {
     setIsLoadingSession(true);
     try {
-      // Attempt to restore using a stored token first
+      const storedPhone = sessionStore.getPhone();
       const storedToken = sessionStore.getSessionToken();
-      if (storedToken) {
+
+      if (storedPhone === phone && storedToken) {
+        // Try to restore existing session for this phone
         try {
           const restoreResp = await fetch(`${SESSION_API}/session/restore`, {
             method: 'GET',
@@ -170,7 +192,12 @@ const Chat = () => {
             setSessionToken(storedToken);
             setSessionInfo(restoreData.session);
             setShowPhoneInput(false);
-            sessionStore.setPhone(phone || sessionStore.getPhone());
+            sessionStore.setPhone(phone);
+
+            // Extract user_id and fetch loyalty points
+            const user_id = restoreData.session.customer_id || restoreData.session.data?.user_id || restoreData.session.user_id || '101';
+            setUserId(user_id);
+            await fetchLoyaltyPoints(user_id);
 
             if (restoreData.session.data?.chat_context?.length > 0) {
                       const chatMessages = restoreData.session.data.chat_context.map((msg, idx) => ({
@@ -192,6 +219,7 @@ const Chat = () => {
 
       }
 
+      // Start new session for this phone
       const response = await fetch(`${SESSION_API}/session/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -210,6 +238,11 @@ const Chat = () => {
       sessionStore.setPhone(phone);
       setSessionInfo(data.session);
       setShowPhoneInput(false);
+
+      // Extract user_id and fetch loyalty points
+      const user_id = data.session.customer_id || data.session.data?.user_id || data.session.user_id || '101';
+      setUserId(user_id);
+      await fetchLoyaltyPoints(user_id);
 
       // Load chat history from session
       if (data.session.data.chat_context && data.session.data.chat_context.length > 0) {
@@ -636,7 +669,7 @@ const Chat = () => {
     "Based on your preferences, I have some perfect options!"
   ];
 
-  const initiateRazorpayPayment = async (amount, details = {}) => {
+  const initiateRazorpayPayment = async (amount, product = null) => {
     if (!sessionToken) {
       alert('Start a chat session before initiating payment.');
       return;
@@ -733,9 +766,30 @@ const Chat = () => {
               amount_rupees: parsedAmount,
               user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone,
               method: 'razorpay',
-              idempotency_key: details.orderId || undefined,
             });
 
+            // Refresh loyalty points after payment
+            await fetchLoyaltyPoints(userId);
+
+            let successText = `✅ Payment of ₹${parsedAmount} received!\nPayment ID: ${response.razorpay_payment_id}`;
+            
+            // Add product-specific message and rewards
+            if (product) {
+              successText += `\n\n🎉 Purchase Complete!\n📦 ${product.name}\n💰 Amount Paid: ₹${parsedAmount}`;
+              
+              // Show rewards earned (this will be updated by the payment service)
+              successText += `\n\n🎁 Rewards Earned:\n💎 Loyalty points added to your account!\n🏅 Check your updated tier status above.`;
+            }
+
+            const successMessage = {
+              id: Date.now() + Math.random(),
+              text: successText,
+              sender: 'agent',
+              timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+              status: 'read',
+            };
+            setMessages((prev) => [...prev, successMessage]);
+            await saveChatMessage('agent', successText);
             const productLine = details.name ? ` for ${details.name}` : '';
             await appendAgentMessage(
               `✅ Payment of ${formatINR(parsedAmount)} received${productLine}!\nPayment ID: ${response.razorpay_payment_id}`
@@ -929,28 +983,75 @@ const Chat = () => {
     }
   };
 
-  const handlePaymentClick = () => {
-    if (!sessionToken) {
-      alert('Start the chat first so we know who to charge.');
+  const handleProductPurchase = async (product) => {
+    if (!sessionToken || !userId) {
+      alert('Please start a chat session first.');
       return;
     }
 
-    if (!isRazorpayReady) {
-      alert('Razorpay checkout is still loading. Please try again in a moment.');
+    if (isPaymentProcessing) {
       return;
     }
 
-    const defaultAmount = sessionInfo?.data?.cart_total || '499';
-    const amountInput = window.prompt('Enter payment amount (INR)', defaultAmount);
+    setIsPaymentProcessing(true);
 
-    if (!amountInput) {
-      return;
+    try {
+      // Step 1: Calculate discounts
+      const discountResponse = await fetch(`${API_ENDPOINTS.LOYALTY}/loyalty/calculate-discounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          cart_total: parseFloat(product.price)
+        })
+      });
+
+      if (!discountResponse.ok) {
+        throw new Error('Failed to calculate discounts');
+      }
+
+      const discountData = await discountResponse.json();
+
+      // Step 2: Show discount breakdown to user
+      const originalPrice = discountData.original_total;
+      const finalPrice = discountData.final_total;
+      const savings = originalPrice - finalPrice;
+
+      const discountMessage = `🛒 **Purchase Summary**\n\n` +
+        `📦 Product: ${product.name}\n` +
+        `💰 Original Price: ₹${originalPrice}\n` +
+        `${discountData.message}\n` +
+        `💸 You Save: ₹${savings.toFixed(2)}\n` +
+        `✅ Final Price: ₹${finalPrice.toFixed(2)}\n\n` +
+        `🎁 Your Loyalty Status:\n` +
+        `🏅 Tier: ${loyaltyTier}\n` +
+        `💎 Points: ${loyaltyPoints}\n\n` +
+        `Ready to proceed with payment?`;
+
+      // Add discount summary message
+      const discountMsg = {
+        id: Date.now(),
+        text: discountMessage,
+        sender: 'agent',
+        timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages(prev => [...prev, discountMsg]);
+      await saveChatMessage('agent', discountMessage);
+
+      // Step 3: Process payment
+      await initiateRazorpayPayment(finalPrice.toFixed(2), product);
+
+    } catch (error) {
+      console.error('Purchase error:', error);
+      alert('Failed to process purchase. Please try again.');
+    } finally {
+      setIsPaymentProcessing(false);
     }
+  };
 
-    openAddressModalForPayment({
-      amount: amountInput,
-      details: { source: 'manual-entry' },
-    });
+  const handlePaymentClick = async () => {
+    // You can implement a generic payment action here if needed.
+    // For now, it does nothing.
   };
 
   const sendMessageToAgent = async (messageText, { skipBackend = false } = {}) => {
@@ -994,7 +1095,7 @@ const Chat = () => {
       const payload = {
         message: messageText,
         session_token: sessionToken,
-        metadata: { user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone },
+        metadata: { user_id: sessionInfo?.customer_id || sessionInfo?.phone }
       };
 
       const resp = await fetch(`${SALES_API}/api/message`, {
@@ -1421,7 +1522,7 @@ const Chat = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-[#efeae2]">
+    <div className="flex flex-col h-full min-h-0 bg-[#efeae2]">
       {/* Header - WhatsApp style */}
       <div className="bg-[#008069] text-white px-4 py-3 flex items-center justify-between shadow-md">
         <div className="flex items-center gap-3">
@@ -1436,7 +1537,22 @@ const Chat = () => {
             <p className="text-xs text-[#d9d9d9]">online</p>
           </div>
         </div>
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-4">
+          {/* Loyalty Points & Tier Badge */}
+          {loyaltyPoints > 0 && (
+            <div className="flex items-center gap-2 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 px-3 py-1.5 rounded-full border border-yellow-500/50">
+              <span className="text-xl">
+                {loyaltyTier === 'Platinum' ? '💎' : loyaltyTier === 'Gold' ? '🥇' : loyaltyTier === 'Silver' ? '🥈' : '🥉'}
+              </span>
+              <div className="text-sm">
+                <div className="flex items-center gap-1">
+                  <span className="font-bold text-white">{loyaltyPoints}</span>
+                  <span className="text-xs text-yellow-200">pts</span>
+                </div>
+                <div className="text-[10px] text-yellow-300 -mt-0.5 font-semibold">{loyaltyTier}</div>
+              </div>
+            </div>
+          )}
           <button className="hover:bg-[#017561] p-2 rounded-full transition-colors">
             <Video className="w-5 h-5" />
           </button>
@@ -1491,7 +1607,7 @@ const Chat = () => {
 
       {/* Chat Messages Area */}
       <div 
-        className="flex-1 overflow-y-auto px-4 py-6 space-y-3"
+        className="flex-1 overflow-y-auto px-4 py-6 space-y-3 min-h-0"
         style={{
           backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'%23d9d9d9\' fill-opacity=\'0.05\'%3E%3Cpath d=\'M0 0h50v50H0zM50 50h50v50H50z\'/%3E%3C/g%3E%3C/svg%3E")',
         }}
@@ -1508,7 +1624,7 @@ const Chat = () => {
                   : 'bg-white text-gray-900'
               }`}
             >
-              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words">
                 {message.text && message.text.length > 800 && !expandedMessages.has(message.id)
                   ? `${message.text.slice(0, 380)}... `
                   : message.text}
@@ -1520,13 +1636,13 @@ const Chat = () => {
                     {expandedMessages.has(message.id) ? 'Show less' : 'Show more'}
                   </button>
                 )}
-              </p>
+              </div>
               
               {/* Product Cards */}
               {message.cards && message.cards.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {message.cards.map((card, idx) => (
-                    <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                    <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors">
                       <div className="flex gap-3">
                         {card.image && (
                           <img 
@@ -1614,20 +1730,17 @@ const Chat = () => {
                               )}
                             </div>
                           )}
-                          <div className="mt-3 flex flex-col gap-2">
+                          
+                          {/* Purchase Button */}
+                          <div className="mt-3 flex justify-end">
                             <button
-                              onClick={() => handleBuyNow(card)}
-                              className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-[#128c7e] text-white text-sm font-semibold rounded-lg hover:bg-[#0a6258] transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+                              onClick={() => handleProductPurchase(card)}
                               disabled={isPaymentProcessing}
+                              className="bg-[#00796b] hover:bg-[#00695c] disabled:bg-gray-400 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors flex items-center gap-1"
                             >
-                              <CreditCard className="w-4 h-4" />
-                              <span>Buy Now</span>
+                              <CreditCard className="w-3 h-3" />
+                              {isPaymentProcessing ? 'Processing...' : 'Buy Now'}
                             </button>
-                            {pendingCheckoutItem?.sku && card.sku && String(pendingCheckoutItem.sku).toUpperCase() === String(card.sku).toUpperCase() && (
-                              <p className="text-xs text-[#075e54]">
-                                Selected for checkout. Type <span className="font-semibold">confirm</span> to continue.
-                              </p>
-                            )}
                           </div>
                         </div>
                       </div>

@@ -148,6 +148,7 @@ class VertexIntentDetector:
    - gifting: Buying a gift for someone
    - comparison: Comparing multiple products
    - trend: Asking about trends/popular items
+   - loyalty: Asking about loyalty points, rewards, coupons, offers, discounts
    - social_validation: Asking what others buy/like, community insights, what's popular in their circle
    - support: Help with order/return/issue
    - fallback: Unclear intent
@@ -177,7 +178,7 @@ class VertexIntentDetector:
 
 ### Response Format (valid JSON only):
 {{
-  "intent": "recommendation|inventory|payment|gifting|comparison|trend|social_validation|support|fallback",
+  "intent": "recommendation|inventory|payment|gifting|comparison|trend|loyalty|social_validation|support|fallback",
   "confidence": 0.95,
   "entities": {{
     "category": "footwear",
@@ -394,8 +395,20 @@ Respond with ONLY the JSON object, no additional text."""
                         entities["product_name"] = match.group(1).strip()
                         break
         
-        # Payment/checkout intent
-        elif re.search(r"\b(buy|checkout|order|pay|purchase|place order|proceed)\b", text):
+        # Order tracking / support (route to fulfillment)
+        elif re.search(r"\b(where is my order|order status|track order|track my order|where is order)\b", text):
+            intent = IntentType.SUPPORT
+            confidence = 0.95
+            # Extract order id patterns like ORD000894 or ORD-XXXX or ORD-123456
+            # Must have at least one digit or special char after ORD to distinguish from word "order"
+            oid_match = re.search(r"\b(ORD(?:[-_]?\d+[-\w]*|[-_]\w+))\b", user_message, re.IGNORECASE)
+            if oid_match:
+                matched_id = oid_match.group(1).upper()
+                entities["order_id"] = matched_id
+                logger.debug(f"Extracted order_id: {matched_id}")
+
+        # Payment/checkout intent (avoid matching pure tracking queries)
+        elif re.search(r"\b(buy|checkout|pay|purchase|place order|proceed)\b", text):
             intent = IntentType.PAYMENT
             confidence = 0.9
         
@@ -409,10 +422,26 @@ Respond with ONLY the JSON object, no additional text."""
             intent = IntentType.TREND
             confidence = 0.85
         
+        # Loyalty/rewards intent
+        elif re.search(r"\b(loyalty|points|reward|coupon|discount|offer|promo|cashback|redeem)\b", text):
+            intent = "loyalty"
+            confidence = 0.9
+            # Extract coupon code if present
+            coupon_match = re.search(r"\b([A-Z]{3,10}\d{1,3})\b", user_message)
+            if coupon_match:
+                entities["coupon_code"] = coupon_match.group(1)
+        
         # Support/help
+        # Support/help (generic)
         elif re.search(r"\b(help|support|problem|issue|return|refund|cancel|complaint)\b", text):
             intent = IntentType.SUPPORT
             confidence = 0.85
+            # Try extracting order id if present (must have digit or special char after ORD)
+            oid_match = re.search(r"\b(ORD(?:[-_]?\d+[-\w]*|[-_]\w+))\b", user_message, re.IGNORECASE)
+            if oid_match:
+                matched_id = oid_match.group(1).upper()
+                entities["order_id"] = matched_id
+                logger.debug(f"Extracted order_id: {matched_id}")
         
         # Extract customer ID if present
         customer_match = re.search(r"(?:customer\s*id|memberid|id)\s*[:#]?\s*(\d{2,12})", text, re.IGNORECASE)

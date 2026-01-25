@@ -55,6 +55,12 @@ PHONE_SESSION_IDS: Dict[str, str] = {}
 # phone_number -> customer_id mapping from CSV
 PHONE_TO_CUSTOMER: Dict[str, str] = {}
 
+# Telegram-based mappings
+# telegram_chat_id -> session_token (for quick lookup)
+TELEGRAM_SESSIONS: Dict[str, str] = {}
+# telegram_chat_id -> phone_number mapping (for customer lookup)
+TELEGRAM_TO_PHONE: Dict[str, str] = {}
+
 # Load customers.csv to map phone numbers to customer IDs
 try:
     data_path = Path(__file__).parent / "data" / "customers.csv"
@@ -77,11 +83,13 @@ except Exception as e:
 class StartSessionRequest(BaseModel):
     """Request model for starting a session.
 
-    Requires phone number for session continuity across channels.
+    Requires either phone number or telegram_chat_id for session continuity across channels.
     """
-    phone: str = Field(..., description="Phone number as primary identifier")
-    channel: str = Field(default="whatsapp", description="Channel: whatsapp or kiosk")
+    phone: Optional[str] = Field(default=None, description="Phone number as primary identifier")
+    telegram_chat_id: Optional[str] = Field(default=None, description="Telegram chat ID for Telegram sessions")
+    channel: str = Field(default="whatsapp", description="Channel: whatsapp, kiosk, or telegram")
     user_id: Optional[str] = Field(default=None, description="Optional user id to associate with session")
+    customer_id: Optional[str] = Field(default=None, description="Customer ID from customers.csv")
 
 
 class StartSessionResponse(BaseModel):
@@ -102,6 +110,7 @@ class UpdateSessionRequest(BaseModel):
 
 class RestoreSessionResponse(BaseModel):
     """Response model returned when restoring a session."""
+    session_token: str
     session: Dict[str, Any]
 
 
@@ -133,13 +142,14 @@ def generate_session_token() -> str:
     return token
 
 
-def create_session(phone: str, channel: str = "whatsapp", user_id: Optional[str] = None) -> (str, Dict[str, Any]):
+def create_session(phone: Optional[str] = None, telegram_chat_id: Optional[str] = None, channel: str = "whatsapp", user_id: Optional[str] = None, customer_id: Optional[str] = None) -> (str, Dict[str, Any]):
     """Create a new session object and store it in the in-memory store.
 
     The session schema follows the user's requirements:
     - session_id: uuid (persistent for the phone number)
-    - phone: phone number as primary identifier
-    - channel: whatsapp or kiosk
+    - phone: phone number as primary identifier (can be None for Telegram-only sessions)
+    - telegram_chat_id: Telegram chat ID (can be None for phone-only sessions)
+    - channel: whatsapp, kiosk, or telegram
     - user_id: can be `None` initially
     - data: { cart: [], recent: [], chat_context: [], last_action: None }
     - created_at: session creation timestamp
@@ -148,46 +158,72 @@ def create_session(phone: str, channel: str = "whatsapp", user_id: Optional[str]
     - is_active: session status
 
     Args:
-        phone: Phone number as primary identifier
-        channel: Channel type (whatsapp or kiosk)
+        phone: Phone number as primary identifier (optional)
+        telegram_chat_id: Telegram chat ID (optional)
+        channel: Channel type (whatsapp, kiosk, telegram)
         user_id: Optional user identifier to attach to the session.
 
     Returns:
         Tuple of (session_token, session_dict)
     """
-    # If phone already has a session token, restore it (no expiry)
-    existing_token = PHONE_SESSIONS.get(phone)
+    # Validate that at least one identifier is provided
+    if not phone and not telegram_chat_id:
+        raise ValueError("Either phone or telegram_chat_id must be provided")
+
+    # Determine the primary identifier for session lookup
+    primary_id = phone or telegram_chat_id
+    is_telegram = telegram_chat_id is not None
+
+    # Check for existing session based on the primary identifier
+    existing_token = None
+    if phone and phone in PHONE_SESSIONS:
+        existing_token = PHONE_SESSIONS[phone]
+    elif telegram_chat_id and telegram_chat_id in TELEGRAM_SESSIONS:
+        existing_token = TELEGRAM_SESSIONS[telegram_chat_id]
+
     if existing_token and existing_token in SESSIONS:
         existing_session = SESSIONS[existing_token]
         existing_session["channel"] = channel
         existing_session["is_active"] = True
         existing_session["updated_at"] = _now_iso()
+        # Update telegram_chat_id if provided and different
+        if telegram_chat_id and existing_session.get("telegram_chat_id") != telegram_chat_id:
+            existing_session["telegram_chat_id"] = telegram_chat_id
+            TELEGRAM_SESSIONS[telegram_chat_id] = existing_token
+            if phone:
+                TELEGRAM_TO_PHONE[telegram_chat_id] = phone
         SESSIONS[existing_token] = existing_session
-        PHONE_SESSION_IDS[phone] = existing_session["session_id"]
-        logger.info(f"Restored session for phone={phone}, channel={channel}, session_id={existing_session['session_id']}")
+        logger.info(f"Restored session for {primary_id}, channel={channel}, session_id={existing_session['session_id']}")
         return existing_token, existing_session
 
     # Generate the unique token used by clients to refer to this session
     token = generate_session_token()
 
-    # Persistent session_id per phone (create once and reuse forever)
-    session_id = PHONE_SESSION_IDS.get(phone) or str(uuid.uuid4())
-    PHONE_SESSION_IDS[phone] = session_id
-
-    # Map phone to customer_id from CSV
-    customer_id = PHONE_TO_CUSTOMER.get(phone)
-    if customer_id:
-        logger.info(f"Mapped phone {phone} to customer_id {customer_id}")
+    # For phone-based sessions, use persistent session_id per phone
+    # For Telegram-only sessions, create a new session_id
+    session_id = None
+    if phone:
+        session_id = PHONE_SESSION_IDS.get(phone) or str(uuid.uuid4())
+        PHONE_SESSION_IDS[phone] = session_id
     else:
-        logger.warning(f"Phone {phone} not found in customers.csv")
+        session_id = str(uuid.uuid4())
+
+    # Map to customer_id from CSV (only if phone is provided and customer_id not provided)
+    if not customer_id and phone:
+        customer_id = PHONE_TO_CUSTOMER.get(phone)
+        if customer_id:
+            logger.info(f"Mapped phone {phone} to customer_id {customer_id}")
+        else:
+            logger.warning(f"Phone {phone} not found in customers.csv")
     
     # Build the session payload with the required structure
     session = {
-        "session_id": session_id,  # persistent id for the phone
-        "phone": phone,  # primary identifier
+        "session_id": session_id,  # persistent id for the phone (or unique for Telegram-only)
+        "phone": phone,  # primary identifier (can be None)
+        "telegram_chat_id": telegram_chat_id,  # Telegram chat ID (can be None)
         "channel": channel,  # current channel
         "user_id": user_id,  # can be None
-        "customer_id": customer_id,  # mapped from customers.csv
+        "customer_id": customer_id,  # mapped from customers.csv (can be None)
         "data": {
             "cart": [],  # list of cart items
             "recent": [],  # recently viewed products
@@ -201,10 +237,17 @@ def create_session(phone: str, channel: str = "whatsapp", user_id: Optional[str]
 
     # Store session in the global in-memory dict
     SESSIONS[token] = session
-    PHONE_SESSIONS[phone] = token
+
+    # Update mappings
+    if phone:
+        PHONE_SESSIONS[phone] = token
+    if telegram_chat_id:
+        TELEGRAM_SESSIONS[telegram_chat_id] = token
+        if phone:
+            TELEGRAM_TO_PHONE[telegram_chat_id] = phone
 
     # Log for visibility during development
-    logger.info(f"Created new session: token={token}, session_id={session['session_id']}, phone={phone}")
+    logger.info(f"Created new session: token={token}, session_id={session['session_id']}, identifier={primary_id}")
 
     return token, session
 
@@ -300,10 +343,20 @@ def update_session_state(token: str, action: str, payload: Dict[str, Any]) -> Di
         sender = payload.get("sender", "user")
         # Allow optional metadata to be stored alongside chat messages
         metadata = payload.get("metadata")
-        chat_entry = {"sender": sender, "message": message, "timestamp": _now_iso()}
-        if metadata is not None:
-            chat_entry["metadata"] = metadata
-        data["chat_context"].append(chat_entry)
+
+        # Prevent accidental duplicate consecutive messages (same sender + text)
+        last_entry = data["chat_context"][-1] if data["chat_context"] else None
+        if last_entry and last_entry.get("sender") == sender and last_entry.get("message") == message:
+            # Update timestamp on the existing entry instead of appending duplicate
+            last_entry["timestamp"] = _now_iso()
+            if metadata is not None:
+                last_entry["metadata"] = metadata
+            logger.debug("Skipped appending duplicate chat message; refreshed timestamp instead.")
+        else:
+            chat_entry = {"sender": sender, "message": message, "timestamp": _now_iso()}
+            if metadata is not None:
+                chat_entry["metadata"] = metadata
+            data["chat_context"].append(chat_entry)
 
         data["last_action"] = {"type": "chat_message", "sender": sender, "timestamp": _now_iso()}
 
@@ -335,37 +388,102 @@ def update_session_state(token: str, action: str, payload: Dict[str, Any]) -> Di
     # Return the updated session
     return session
 
+
+def _dedupe_chat_context(session: Dict[str, Any]) -> None:
+    """Remove consecutive duplicate chat entries (in-place) to keep history clean."""
+    ctx = session.get("data", {}).get("chat_context")
+    if not ctx or len(ctx) < 2:
+        return
+
+    cleaned = [ctx[0]]
+    for entry in ctx[1:]:
+        last = cleaned[-1]
+        if entry.get("sender") == last.get("sender") and entry.get("message") == last.get("message"):
+            # skip duplicate
+            continue
+        cleaned.append(entry)
+
+    session["data"]["chat_context"] = cleaned
+
 # -----------------------------
 # API Endpoints
 # -----------------------------
 
 @app.post("/session/start", response_model=StartSessionResponse)
 async def session_start(request: StartSessionRequest):
-    """Start a new session or restore existing session for a phone number.
+    """Start a new session or restore existing session for a phone number or Telegram chat.
 
-    The endpoint accepts phone, channel, and optional user_id.
+    The endpoint accepts phone, telegram_chat_id, channel, and optional user_id.
     Returns the session_token and full session object.
-    If phone already has an active session, restores it with updated channel.
+    If identifier already has an active session, restores it with updated channel.
     """
     # Create or restore session using helper; this stores it in-memory
-    token, session = create_session(phone=request.phone, channel=request.channel, user_id=request.user_id)
+    token, session = create_session(
+        phone=request.phone,
+        telegram_chat_id=request.telegram_chat_id,
+        channel=request.channel,
+        user_id=request.user_id,
+        customer_id=request.customer_id
+    )
 
     # Explicitly return a JSONResponse to ensure consistent JSON outputs
+    # Clean up any accidental duplicate entries in chat history before returning
+    try:
+        _dedupe_chat_context(session)
+    except Exception:
+        logger.debug("Failed to dedupe chat context on session start", exc_info=True)
+
     return JSONResponse(status_code=200, content={"session_token": token, "session": session})
 
 
 @app.get("/session/restore", response_model=RestoreSessionResponse)
-async def session_restore(x_session_token: Optional[str] = Header(None, alias="X-Session-Token")):
-    """Restore a session using the `X-Session-Token` header.
+async def session_restore(
+    x_session_token: Optional[str] = Header(None, alias="X-Session-Token"),
+    x_telegram_chat_id: Optional[str] = Header(None, alias="X-Telegram-Chat-Id"),
+    x_customer_id: Optional[str] = Header(None, alias="X-Customer-Id")
+):
+    """Restore a session using the `X-Session-Token` header, `X-Telegram-Chat-Id` header, or `X-Customer-Id` header.
 
-    If the header is missing or the token is invalid, this endpoint returns an HTTP error.
+    If the headers are missing or the identifiers are invalid, this endpoint returns an HTTP error.
     """
+    # Try to restore by session token first
+    if x_session_token:
+        # Retrieve the session using our helper (raises 404 if not found)
+        session = get_session(x_session_token)
+        # Return the session inside a JSON response
+        return JSONResponse(status_code=200, content={"session_token": x_session_token, "session": session})
+
+    # Try to restore by telegram chat ID
+    if x_telegram_chat_id:
+        if x_telegram_chat_id in TELEGRAM_SESSIONS:
+            token = TELEGRAM_SESSIONS[x_telegram_chat_id]
+            session = get_session(token)
+            # Return the session inside a JSON response
+            return JSONResponse(status_code=200, content={"session_token": token, "session": session})
+        else:
+            raise HTTPException(status_code=404, detail="Session not found for Telegram chat ID")
+
+    # Try to restore by customer ID
+    if x_customer_id:
+        # Find session by customer_id
+        for token, session in SESSIONS.items():
+            if session.get("customer_id") == x_customer_id:
+                return JSONResponse(status_code=200, content={"session_token": token, "session": session})
+        raise HTTPException(status_code=404, detail="Session not found for Customer ID")
+
+    # No valid identifier provided
+    raise HTTPException(status_code=400, detail="Missing X-Session-Token, X-Telegram-Chat-Id, or X-Customer-Id header")
     # Ensure a token was provided by the client
     if not x_session_token:
         raise HTTPException(status_code=400, detail="Missing X-Session-Token header")
 
     # Retrieve the session using our helper (raises 404 if not found)
     session = get_session(x_session_token)
+    # Clean up any accidental duplicate entries in chat history before returning
+    try:
+        _dedupe_chat_context(session)
+    except Exception:
+        logger.debug("Failed to dedupe chat context on session restore", exc_info=True)
 
     # Return the session inside a JSON response
     return JSONResponse(status_code=200, content={"session": session})

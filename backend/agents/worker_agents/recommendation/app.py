@@ -312,12 +312,31 @@ def filter_products_by_intent(
             ]
     
     # Filter by category
-    if 'category' in intent and intent['category']:
-        category = intent['category']
-        filtered = filtered[
-            filtered['category'].str.contains(category, case=False, na=False) |
-            filtered['subcategory'].str.contains(category, case=False, na=False)
-        ]
+    category_filter = intent.get('category') or intent.get('subcategory')
+    if category_filter:
+        # Normalize category filter for better matching
+        category_lower = category_filter.lower()
+        if category_lower in ['shirt', 'shirts']:
+            # Match various shirt-related terms
+            name_patterns = ['shirt', 't-shirt', 'polo', 'topwear']
+            category_matches = filtered['category'].str.contains('apparel', case=False, na=False)
+            subcategory_matches = filtered['subcategory'].str.contains('topwear', case=False, na=False)
+            name_matches = filtered['ProductDisplayName'].str.contains('|'.join(name_patterns), case=False, na=False, regex=True)
+            filtered = filtered[category_matches | subcategory_matches | name_matches]
+        elif category_lower in ['shoe', 'shoes', 'sneaker', 'footwear']:
+            # Match footwear-related terms
+            name_patterns = ['shoe', 'sneaker', 'boot', 'sandal', 'footwear']
+            category_matches = filtered['category'].str.contains('footwear', case=False, na=False)
+            subcategory_matches = filtered['subcategory'].str.contains('|'.join(['shoe', 'sneaker', 'boot', 'sandal']), case=False, na=False, regex=True)
+            name_matches = filtered['ProductDisplayName'].str.contains('|'.join(name_patterns), case=False, na=False, regex=True)
+            filtered = filtered[category_matches | subcategory_matches | name_matches]
+        else:
+            # Default filtering
+            filtered = filtered[
+                filtered['category'].str.contains(category_filter, case=False, na=False) |
+                filtered['subcategory'].str.contains(category_filter, case=False, na=False) |
+                filtered['ProductDisplayName'].str.contains(category_filter, case=False, na=False)
+            ]
     
     # Filter by price range
     if 'budget_min' in intent and intent['budget_min']:

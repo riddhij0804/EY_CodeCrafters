@@ -32,18 +32,18 @@ USE_REAL_AGENTS = os.getenv("USE_REAL_AGENTS", "false").lower() == "true"
 # Worker agent URLs (configurable via environment)
 AGENT_URLS = {
     "inventory": os.getenv("INVENTORY_URL", "http://localhost:8001"),
-    "recommendation": os.getenv("RECOMMENDATION_URL", "http://localhost:8004"),
+    "recommendation": os.getenv("RECOMMENDATION_URL", "http://localhost:8008"),
     "virtual_circles": os.getenv("VIRTUAL_CIRCLES_URL", "http://localhost:8007"),
     "payment": os.getenv("PAYMENT_URL", "http://localhost:8003"),
     "loyalty": os.getenv("LOYALTY_URL", "http://localhost:8002"),
-    "fulfillment": os.getenv("FULFILLMENT_URL", "http://localhost:8009"),
+    "fulfillment": os.getenv("FULFILLMENT_URL", "http://localhost:8004"),
     "post_purchase": os.getenv("POST_PURCHASE_URL", "http://localhost:8005"),
     "stylist": os.getenv("STYLIST_URL", "http://localhost:8006"),
-    "ambient_commerce": os.getenv("AMBIENT_COMMERCE_URL", "http://localhost:8008"),
+    "ambient_commerce": os.getenv("AMBIENT_COMMERCE_URL", "http://localhost:8009"),
 }
 
-# HTTP timeout for agent calls
-AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "5"))
+# HTTP timeout for agent calls (30s to handle LLM latency in recommendation service)
+AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "30"))
 
 
 # ============================================================================
@@ -356,9 +356,13 @@ async def call_real_agent(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
     """
     if agent_name not in AGENT_URLS:
         raise ValueError(f"Unknown agent: {agent_name}")
-    
+
+    # Fulfillment has concrete REST endpoints instead of /handle
+    if agent_name == "fulfillment":
+        return await _call_fulfillment_agent(payload)
+
     url = f"{AGENT_URLS[agent_name]}/handle"
-    
+
     try:
         async with httpx.AsyncClient(timeout=AGENT_TIMEOUT) as client:
             logger.info(f"🌐 REAL CALL: {agent_name} at {url}")
@@ -374,6 +378,87 @@ async def call_real_agent(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
     except httpx.HTTPStatusError as e:
         logger.error(f"❌ HTTP error from {agent_name}: {e.response.status_code}")
         raise Exception(f"{agent_name} service error: {e.response.status_code}")
+
+
+async def _call_fulfillment_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Route fulfillment actions to concrete endpoints."""
+    action = payload.get("action", "start")
+    base = AGENT_URLS["fulfillment"]
+
+    try:
+        async with httpx.AsyncClient(timeout=AGENT_TIMEOUT) as client:
+            if action == "start":
+                body = {
+                    "order_id": payload.get("order_id"),
+                    "inventory_status": payload.get("inventory_status", "RESERVED"),
+                    "payment_status": payload.get("payment_status", "SUCCESS"),
+                    "amount": float(payload.get("amount", 0)),
+                    "inventory_hold_id": payload.get("inventory_hold_id"),
+                    "payment_transaction_id": payload.get("payment_transaction_id"),
+                }
+                url = f"{base}/fulfillment/start"
+                logger.info(f"🌐 REAL CALL: fulfillment start at {url}")
+                response = await client.post(url, json=body)
+
+            elif action == "update_status":
+                url = f"{base}/fulfillment/update-status"
+                body = {
+                    "order_id": payload.get("order_id"),
+                    "new_status": payload.get("new_status"),
+                }
+                logger.info(f"🌐 REAL CALL: fulfillment update at {url}")
+                response = await client.post(url, json=body)
+
+            elif action == "mark_delivered":
+                url = f"{base}/fulfillment/mark-delivered"
+                body = {
+                    "order_id": payload.get("order_id"),
+                    "delivery_notes": payload.get("delivery_notes"),
+                }
+                logger.info(f"🌐 REAL CALL: fulfillment delivered at {url}")
+                response = await client.post(url, json=body)
+
+            elif action == "cancel":
+                url = f"{base}/fulfillment/cancel-order"
+                body = {
+                    "order_id": payload.get("order_id"),
+                    "reason": payload.get("reason", "Customer request"),
+                    "refund_amount": float(payload.get("refund_amount", 0)),
+                }
+                logger.info(f"🌐 REAL CALL: fulfillment cancel at {url}")
+                response = await client.post(url, json=body)
+
+            elif action == "return":
+                url = f"{base}/fulfillment/process-return"
+                body = {
+                    "order_id": payload.get("order_id"),
+                    "reason": payload.get("reason", "Return"),
+                    "refund_amount": float(payload.get("refund_amount", 0)),
+                }
+                logger.info(f"🌐 REAL CALL: fulfillment return at {url}")
+                response = await client.post(url, json=body)
+
+            elif action == "status":
+                order_id = payload.get("order_id")
+                url = f"{base}/fulfillment/{order_id}"
+                logger.info(f"🌐 REAL CALL: fulfillment status at {url}")
+                response = await client.get(url)
+
+            else:
+                raise ValueError(f"Unknown fulfillment action: {action}")
+
+            response.raise_for_status()
+            return response.json()
+
+    except httpx.TimeoutException:
+        logger.error(f"⏱️ Timeout calling fulfillment after {AGENT_TIMEOUT}s")
+        raise Exception("fulfillment service timeout")
+    except httpx.ConnectError:
+        logger.error(f"🔌 Cannot connect to fulfillment at {base}")
+        raise Exception("Cannot connect to fulfillment service")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ HTTP error from fulfillment: {e.response.status_code}")
+        raise Exception(f"fulfillment service error: {e.response.status_code}")
 
 
 # ============================================================================

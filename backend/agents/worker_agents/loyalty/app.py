@@ -94,6 +94,25 @@ class RulesEngineResponse(BaseModel):
     message: str
 
 
+class CalculateDiscountsRequest(BaseModel):
+    user_id: str = Field(..., description="User ID")
+    cart_total: float = Field(..., gt=0, description="Cart total amount")
+
+
+class CalculateDiscountsResponse(BaseModel):
+    success: bool
+    original_total: float
+    tier_discount_percent: float
+    tier_discount_amount: float
+    best_coupon: Optional[dict]
+    coupon_discount_amount: float
+    best_promotion: Optional[dict]
+    promotion_discount_amount: float
+    total_discount_amount: float
+    final_total: float
+    message: str
+
+
 # ==========================================
 # ROUTES
 # ==========================================
@@ -119,6 +138,16 @@ async def get_user_points(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/loyalty/tier/{user_id}")
+async def get_user_tier(user_id: str):
+    """Get complete tier information for a user including points, tier, and benefits"""
+    try:
+        tier_info = redis_utils.get_user_tier_info(user_id)
+        return tier_info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/loyalty/add-points", response_model=dict)
 async def add_points(request: AddPointsRequest):
     """Add loyalty points to a user's account"""
@@ -132,6 +161,38 @@ async def add_points(request: AddPointsRequest):
             "reason": request.reason,
             "timestamp": datetime.now().isoformat()
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/loyalty/earn-from-purchase")
+async def earn_points_from_purchase(user_id: str, amount_spent: float):
+    """
+    Award loyalty points after successful payment.
+    Rule: 1 point per ₹10 spent (with tier multiplier bonus)
+    Automatically upgrades tier if thresholds crossed.
+    """
+    try:
+        if amount_spent <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+        
+        result = redis_utils.earn_points_from_purchase(user_id, amount_spent)
+        
+        # Build response message
+        message = f"🎉 Earned {result['total_points_earned']} loyalty points!"
+        
+        if result['bonus_points'] > 0:
+            message += f" (Base: {result['base_points_earned']}, Bonus: {result['bonus_points']})"
+        
+        if result['tier_upgraded']:
+            message += f"\n\n🏆 Tier Upgraded: {result['previous_tier']} → {result['current_tier']}!"
+        
+        return {
+            **result,
+            "message": message
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -453,6 +514,100 @@ async def get_active_promotions():
         "active_count": active_count,
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.post("/loyalty/calculate-discounts", response_model=CalculateDiscountsResponse)
+async def calculate_discounts(request: CalculateDiscountsRequest):
+    """
+    Calculate all applicable discounts for a user's cart:
+    - Tier-based discount
+    - Best available coupon
+    - Best active promotion
+    Returns the final discounted total
+    """
+    try:
+        original_total = request.cart_total
+        
+        # Get user tier and benefits
+        tier_info = redis_utils.get_user_tier_info(request.user_id)
+        tier_discount_percent = tier_info["benefits"]["discount_percent"]
+        tier_discount_amount = (original_total * tier_discount_percent) / 100
+        
+        # Find best coupon
+        best_coupon = None
+        max_coupon_savings = 0
+        coupons = [
+            {"code": "ABFRL10", "discount_percent": 10.0, "min_purchase": 500.0},
+            {"code": "ABFRL20", "discount_percent": 20.0, "min_purchase": 1000.0},
+            {"code": "WELCOME25", "discount_percent": 25.0, "min_purchase": 1500.0},
+        ]
+        
+        for coupon in coupons:
+            if original_total >= coupon["min_purchase"]:
+                savings = (original_total * coupon["discount_percent"]) / 100
+                if savings > max_coupon_savings:
+                    max_coupon_savings = savings
+                    best_coupon = coupon
+        
+        coupon_discount_amount = max_coupon_savings
+        
+        # Find best promotion (reuse check-promotions logic)
+        from datetime import datetime
+        current_hour = datetime.now().hour
+        current_day = datetime.now().strftime("%A")
+        
+        promotions = [
+            {"name": "Early Bird Special", "discount": 15, "min_purchase": 500, "active": 6 <= current_hour < 10},
+            {"name": "Lunch Hour Deal", "discount": 10, "min_purchase": 300, "active": 12 <= current_hour < 14},
+            {"name": "Happy Hours", "discount": 20, "min_purchase": 1000, "active": 17 <= current_hour < 20},
+            {"name": "Weekend Bonanza", "discount": 25, "min_purchase": 1500, "active": current_day in ["Saturday", "Sunday"]},
+            {"name": "Midnight Flash Sale", "discount": 30, "min_purchase": 2000, "active": 0 <= current_hour < 2},
+        ]
+        
+        best_promotion = None
+        max_promo_savings = 0
+        
+        for promo in promotions:
+            if promo["active"] and original_total >= promo["min_purchase"]:
+                savings = (original_total * promo["discount"]) / 100
+                if savings > max_promo_savings:
+                    max_promo_savings = savings
+                    best_promotion = promo
+        
+        promotion_discount_amount = max_promo_savings
+        
+        # Calculate total discount (tier + coupon + promotion)
+        # Note: We apply tier first, then the best of coupon/promotion
+        total_discount_amount = tier_discount_amount + max(coupon_discount_amount, promotion_discount_amount)
+        
+        final_total = max(0, original_total - total_discount_amount)
+        
+        # Determine which one was applied
+        applied_coupon = best_coupon if coupon_discount_amount >= promotion_discount_amount else None
+        applied_promotion = best_promotion if promotion_discount_amount > coupon_discount_amount else None
+        
+        message = f"Applied {tier_discount_percent}% tier discount"
+        if applied_coupon:
+            message += f" + {applied_coupon['discount_percent']}% coupon ({applied_coupon['code']})"
+        elif applied_promotion:
+            message += f" + {applied_promotion['discount']}% promotion ({applied_promotion['name']})"
+        
+        return CalculateDiscountsResponse(
+            success=True,
+            original_total=original_total,
+            tier_discount_percent=tier_discount_percent,
+            tier_discount_amount=tier_discount_amount,
+            best_coupon=applied_coupon,
+            coupon_discount_amount=coupon_discount_amount if applied_coupon else 0,
+            best_promotion=applied_promotion,
+            promotion_discount_amount=promotion_discount_amount if applied_promotion else 0,
+            total_discount_amount=total_discount_amount,
+            final_total=final_total,
+            message=message
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

@@ -23,7 +23,6 @@ const Community = React.forwardRef((props, ref) => {
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   
   // Circle state
-  const [circles, setCircles] = useState([]);
   const [selectedCircle, setSelectedCircle] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');

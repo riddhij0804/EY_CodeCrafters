@@ -12,6 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import json
 import logging
 import os
+import requests
 print(">>> Razorpay router loaded")
 try:
     import razorpay
@@ -20,6 +21,10 @@ except ImportError:  # pragma: no cover - dependency managed via requirements
 
 import redis_utils
 import payment_repository
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+import orders_repository
 
 app = FastAPI(
     title="Payment Agent",
@@ -41,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+LOYALTY_SERVICE_URL = os.getenv("LOYALTY_SERVICE_URL", "http://localhost:8002")
 
 razorpay_client = None
 razorpay_router = APIRouter(prefix="/payment/razorpay", tags=["Razorpay"])
@@ -375,6 +381,47 @@ async def process_payment(request: PaymentRequest):
             "amount": request.amount,
             "status": "success"
         })
+        # Step 7: Award loyalty points after successful payment
+        loyalty_result = None
+        try:
+            # Call loyalty service to earn points (1 point per ₹10 spent)
+            loyalty_response = requests.post(
+                f"{LOYALTY_SERVICE_URL}/loyalty/earn-from-purchase",
+                params={"user_id": request.user_id, "amount_spent": request.amount},
+                timeout=5
+            )
+            if loyalty_response.ok:
+                loyalty_result = loyalty_response.json()
+                logger.info(f"✅ Loyalty points awarded: {loyalty_result.get('total_points_earned', 0)} points to user {request.user_id}")
+            else:
+                logger.warning(f"⚠️  Loyalty service returned {loyalty_response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to award loyalty points: {e}")
+        
+        # Build response message
+        response_message = f"{gateway_response['message']}. Cashback: ₹{cashback}"
+        if loyalty_result and loyalty_result.get('success'):
+            points_earned = loyalty_result.get('total_points_earned', 0)
+            response_message += f" | Earned {points_earned} loyalty points!"
+            if loyalty_result.get('tier_upgraded'):
+                new_tier = loyalty_result.get('current_tier')
+                response_message += f" 🏆 Upgraded to {new_tier}!"
+        
+        # Register order if order_id is provided (create basic order record for tracking)
+        if request.order_id:
+            try:
+                # Create minimal order record with payment info
+                orders_repository.upsert_order_record({
+                    'order_id': request.order_id,
+                    'customer_id': str(request.user_id),
+                    'items': json.dumps([]),  # Empty items for now (frontend will have details)
+                    'total_amount': round(request.amount, 2),
+                    'status': 'placed',
+                    'created_at': datetime.now().isoformat()
+                })
+                logger.info(f"✅ Order registered: {request.order_id} (payment: {transaction_id})")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to register order {request.order_id}: {e}")
         
         return PaymentResponse(
             success=True,
@@ -383,7 +430,7 @@ async def process_payment(request: PaymentRequest):
             payment_method=request.payment_method,
             gateway_txn_id=gateway_response["gateway_txn_id"],
             cashback=cashback,
-            message=f"{gateway_response['message']}. Cashback: ₹{cashback}",
+            message=response_message,
             timestamp=datetime.now().isoformat(),
             order_id=request.order_id
         )

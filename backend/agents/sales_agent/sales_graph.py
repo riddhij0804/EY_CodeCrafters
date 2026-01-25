@@ -17,6 +17,9 @@ from datetime import datetime
 import requests
 from pathlib import Path
 import pandas as pd
+import csv
+import json
+import sys
 
 from langgraph.graph import StateGraph, END
 from dotenv import load_dotenv
@@ -25,6 +28,9 @@ from dotenv import load_dotenv
 from vertex_intent_detector import detect_intent as vertex_detect_intent
 # Agent client (async unified client for workers)
 from agent_client import call_agent
+# Orders repository for thread-safe CSV persistence
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import orders_repository
 
 # Load environment
 load_dotenv()
@@ -300,17 +306,99 @@ class SalesOrchestrator:
         holds = await self.create_inventory_holds(items, session_id=flow['order_id'])
         flow['steps']['holds'] = holds
 
+        # 3) calculate discounted total with loyalty and coupons
+        original_total = sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items])
+        
+        # Apply automatic discounts via loyalty service
+        try:
+            discount_url = f"{WORKER_SERVICES['loyalty']}/loyalty/calculate-discounts"
+            discount_payload = {
+                "user_id": customer_id,
+                "cart_total": original_total
+            }
+            discount_response = requests.post(discount_url, json=discount_payload, timeout=5)
+            discount_response.raise_for_status()
+            discount_data = discount_response.json()
+            
+            discounted_total = discount_data.get('final_total', original_total)
+            applied_discounts = discount_data.get('message', 'No discounts applied')
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to calculate discounts: {e}")
+            discounted_total = original_total
+            applied_discounts = 'Discount calculation failed'
+        
+        # 4) process payment with discounted amount
+        payment_resp = await self.process_payment(customer_id, discounted_total, payment_method)
+        # Extract first successful hold_id if available
+        inventory_hold_id = None
+        for h in holds:
+            hold_obj = h.get('hold') if isinstance(h, dict) else None
+            if isinstance(hold_obj, dict):
+                inventory_hold_id = hold_obj.get('hold_id') or hold_obj.get('id')
+            if inventory_hold_id:
+                break
+
         # 3) process payment
         total = sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items])
         payment_resp = await self.process_payment(customer_id, total, payment_method)
         flow['steps']['payment'] = payment_resp
+        flow['steps']['discounts'] = {
+            'original_total': original_total,
+            'discounted_total': discounted_total,
+            'applied_discounts': applied_discounts
+        }
         if payment_resp.get('status') in ('failed', False):
             flow['status'] = 'payment_failed'
             return flow
 
+        payment_txn = payment_resp.get('transaction_id') or payment_resp.get('gateway_txn_id')
+
+        # 3.5) persist order record after successful payment using thread-safe repository
+        try:
+            # Build items payload matching orders.csv schema
+            csv_items: List[Dict[str, Any]] = []
+            for it in items:
+                sku = it.get('sku') or it.get('product_sku') or it.get('id')
+                qty = int(it.get('quantity', 1))
+                unit_price = float(it.get('price', 0))
+                csv_items.append({
+                    'sku': sku,
+                    'qty': qty,
+                    'unit_price': unit_price,
+                    'line_total': round(unit_price * qty, 2)
+                })
+
+            status = 'placed'
+            created_at = datetime.utcnow().isoformat()
+
+            # Upsert to CSV safely with thread lock
+            orders_repository.upsert_order_record({
+                'order_id': flow['order_id'],
+                'customer_id': str(customer_id),
+                'items': csv_items,
+                'total_amount': round(total, 2),
+                'status': status,
+                'created_at': created_at
+            })
+            flow['steps']['orders_csv'] = {'status': 'success', 'message': 'Order persisted'}
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to persist order to orders.csv: {e}")
+            flow['steps']['orders_csv'] = {'status': 'failed', 'error': str(e)}
+
         # 4) start fulfillment
         try:
-            fulfill = await call_agent('fulfillment', {'action': 'start', 'order_id': flow['order_id'], 'customer_id': customer_id, 'items': items, 'shipping_address': shipping_address})
+            fulfill = await call_agent('fulfillment', {
+                'action': 'start',
+                'order_id': flow['order_id'],
+                'customer_id': customer_id,
+                'items': items,
+                'shipping_address': shipping_address,
+                'inventory_status': 'RESERVED',
+                'payment_status': 'SUCCESS',
+                'amount': total,
+                'inventory_hold_id': inventory_hold_id,
+                'payment_transaction_id': payment_txn,
+            })
             flow['steps']['fulfillment'] = fulfill
             flow['status'] = 'completed'
         except Exception as e:
@@ -445,9 +533,11 @@ def route_by_intent(state: SalesAgentState) -> Literal[
         "gifting": "recommendation_worker",  # Gifting uses recommendation service
         "inventory": "inventory_worker",
         "payment": "payment_worker",
+        "loyalty": "loyalty_worker",  # Loyalty points and coupons
         "comparison": "recommendation_worker",  # Comparison uses recommendation
         "trend": "recommendation_worker",  # Trends use recommendation
-        "support": "post_purchase_worker",  # Support uses post-purchase
+        # Route order tracking and support to fulfillment (not post-purchase)
+        "support": "fulfillment_worker",
         "social_validation": "virtual_circles_worker",  # Community chat & insights
         "community": "virtual_circles_worker",  # Community features
         "fallback": "fallback_worker",
@@ -616,25 +706,307 @@ async def call_inventory_worker(state: SalesAgentState) -> SalesAgentState:
 
 
 async def call_payment_worker(state: SalesAgentState) -> SalesAgentState:
-    """Call payment microservice."""
+    """Call payment microservice and register order on successful payment."""
     logger.info("📞 Calling Payment Worker...")
     
     state["worker_service"] = "payment"
     state["worker_url"] = WORKER_SERVICES["payment"]
     
     try:
-        # Check if user wants to proceed to checkout
-        state["response"] = (
-            "Ready to checkout? I'll help you complete your purchase securely. "
-            "Please confirm your cart and I'll guide you through payment."
-        )
-        state["cards"] = []
+        # Extract payment details from entities/metadata
+        entities = state.get("entities", {})
+        metadata = state.get("metadata", {})
         
-        logger.info("✅ Payment flow initiated")
+        customer_id = entities.get("customer_id") or metadata.get("user_id") or metadata.get("customer_id")
+        items = entities.get("items") or metadata.get("cart_items", [])
+        payment_method = entities.get("payment_method") or metadata.get("payment_method")
+        shipping_address = entities.get("shipping_address") or metadata.get("shipping_address")
+        
+        logger.info(f"💳 Payment details: customer_id={customer_id}, items={len(items) if items else 0}")
+        
+        # If we have complete payment data, process it
+        if customer_id and items and payment_method:
+            # Call payment agent to process payment
+            payment_resp = await call_agent('payment', {
+                'action': 'process',
+                'customer_id': customer_id,
+                'amount': sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items]),
+                'payment_method': payment_method,
+                'order_id': f"ORD-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{customer_id[:8]}"
+            })
+            
+            # Check if payment was successful
+            if payment_resp.get('success') or payment_resp.get('status') == 'success':
+                logger.info(f"✅ Payment successful: {payment_resp.get('transaction_id')}")
+                
+                # Generate order ID
+                order_id = f"ORD-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{customer_id[:8]}"
+                total_amount = sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items])
+                
+                # 3.5) Register order to orders.csv after successful payment
+                try:
+                    csv_items: List[Dict[str, Any]] = []
+                    for it in items:
+                        sku = it.get('sku') or it.get('product_sku') or it.get('id')
+                        qty = int(it.get('quantity', 1))
+                        unit_price = float(it.get('price', 0))
+                        csv_items.append({
+                            'sku': sku,
+                            'qty': qty,
+                            'unit_price': unit_price,
+                            'line_total': round(unit_price * qty, 2)
+                        })
+                    
+                    orders_repository.upsert_order_record({
+                        'order_id': order_id,
+                        'customer_id': str(customer_id),
+                        'items': csv_items,
+                        'total_amount': round(total_amount, 2),
+                        'status': 'placed',
+                        'created_at': datetime.utcnow().isoformat()
+                    })
+                    logger.info(f"✅ Order registered: {order_id}")
+                    
+                    state["response"] = (
+                        f"🎉 Payment successful! Your order {order_id} has been placed. "
+                        f"Thank you for your purchase! You'll receive updates on your order soon."
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed to register order to CSV: {e}")
+                    state["response"] = (
+                        f"Payment successful, but there was an issue registering your order. "
+                        f"Transaction ID: {payment_resp.get('transaction_id')}"
+                    )
+                
+                state["cards"] = []
+            else:
+                logger.error(f"❌ Payment failed: {payment_resp}")
+                state["response"] = (
+                    f"❌ Payment failed. {payment_resp.get('message', 'Please try again or use a different payment method.')}"
+                )
+                state["cards"] = []
+        else:
+            # No complete payment data, request checkout
+            state["response"] = (
+                "Ready to checkout? I'll help you complete your purchase securely. "
+                "Please confirm your cart and I'll guide you through payment."
+            )
+            state["cards"] = []
+            logger.info("⚠️  Incomplete payment data, awaiting user confirmation")
         
     except Exception as e:
-        logger.error(f"❌ Payment worker failed: {e}")
+        logger.error(f"❌ Payment worker failed: {e}", exc_info=True)
         state["response"] = "I'm having trouble with the payment service. Please try again."
+        state["error"] = str(e)
+        state["cards"] = []
+    
+    return state
+
+
+async def call_loyalty_worker(state: SalesAgentState) -> SalesAgentState:
+    """Call loyalty microservice for points and offers."""
+    logger.info("📞 Calling Loyalty Worker...")
+    
+    state["worker_service"] = "loyalty"
+    state["worker_url"] = WORKER_SERVICES["loyalty"]
+    
+    try:
+        # Extract customer ID from metadata
+        customer_id = None
+        phone = state.get("metadata", {}).get("phone")
+        
+        if phone and phone in _customer_phone_map:
+            customer_id = _customer_phone_map[phone]
+            logger.info(f"✅ Resolved phone {phone} to customer_id {customer_id}")
+        
+        if not customer_id:
+            customer_id = state.get("metadata", {}).get("user_id", "101")  # Default fallback
+            logger.warning(f"⚠️  Using fallback customer_id: {customer_id}")
+        
+        # Get user's complete tier information (points + tier + benefits)
+        url = f"{WORKER_SERVICES['loyalty']}/loyalty/tier/{customer_id}"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        
+        tier_data = response.json()
+        points = tier_data.get("points", 0)
+        tier = tier_data.get("tier", "Bronze")
+        benefits = tier_data.get("benefits", {})
+        next_tier = tier_data.get("next_tier")
+        points_to_next = tier_data.get("points_to_next", 0)
+        
+        # Tier emojis
+        tier_emoji = {"Bronze": "🥉", "Silver": "🥈", "Gold": "🥇", "Platinum": "💎"}
+        
+        # Check for active promotions
+        cart_total = state.get("metadata", {}).get("cart_total", 0)
+        if cart_total > 0:
+            promo_url = f"{WORKER_SERVICES['loyalty']}/loyalty/check-promotions"
+            promo_payload = {
+                "user_id": customer_id,
+                "cart_total": cart_total
+            }
+            promo_response = requests.post(promo_url, json=promo_payload, timeout=5)
+            promo_response.raise_for_status()
+            promo_data = promo_response.json()
+            
+            # Build response with promotions
+            if promo_data.get("applicable_promotions"):
+                best_promo = promo_data.get("best_promotion", {})
+                state["response"] = (
+                    f"{tier_emoji.get(tier, '🏅')} {tier} Tier Member\n\n"
+                    f"💰 You have {points} loyalty points (₹" + str(points) + " value)\n"
+                    f"🎁 Tier Discount: {benefits.get('discount_percent', 0)}% off all purchases\n\n"
+                    f"🎉 Active Offer: {best_promo.get('name', 'N/A')}\n"
+                    f"💸 Save {best_promo.get('discount', 0)}% on purchases above ₹" + str(best_promo.get('min_purchase', 0)) + "\n\n"
+                    f"{f'🚀 {points_to_next} points to {next_tier} tier!' if next_tier else '⭐ Maximum tier reached!'}"
+                )
+            else:
+                state["response"] = (
+                    f"{tier_emoji.get(tier, '🏅')} {tier} Tier Member\n\n"
+                    f"💰 You have {points} points (₹" + str(points) + " value)\n"
+                    f"🎁 Tier Discount: {benefits.get('discount_percent', 0)}% off\n"
+                    f"{'🚀 Free Shipping Enabled!' if benefits.get('free_shipping') else ''}\n\n"
+                    f"{f'🚀 {points_to_next} points to {next_tier}!' if next_tier else '⭐ Maximum tier!'}\n\n"
+                    f"💡 Use points or coupons at checkout!\n"
+                    f"Coupons: ABFRL10, ABFRL20, WELCOME25"
+                )
+        else:
+            # No cart total, just show tier status
+            state["response"] = (
+                f"{tier_emoji.get(tier, '🏅')} {tier} Tier Loyalty Member\n\n"
+                f"💰 Points Balance: {points} (₹" + str(points) + " value)\n"
+                f"🎁 Tier Benefits:\n"
+                f"  • {benefits.get('discount_percent', 0)}% discount on all purchases\n"
+                f"  • {'✅' if benefits.get('free_shipping') else '❌'} Free Shipping\n"
+                f"  • Birthday Bonus: {benefits.get('birthday_bonus', 0)} points\n"
+                f"  • Points Multiplier: {benefits.get('points_multiplier', 1.0)}x\n\n" +
+                ("🚀 Earn " + str(points_to_next) + " more points to reach " + str(next_tier) + " tier!" if next_tier else "⭐ You're at the highest tier!") + "\n\n"
+                "📦 Earn 1 point per ₹10 spent\n"
+                "💡 Points never expire!\n\n"
+                "Available Coupons:\n"
+                "• ABFRL10 - 10% off on ₹500+\n"
+                "• ABFRL20 - 20% off on ₹1000+\n"
+                "• WELCOME25 - 25% off on ₹1500+"
+            )
+        
+        state["cards"] = []
+        state["metadata"]["loyalty_points"] = points
+        state["metadata"]["loyalty_tier"] = tier
+        logger.info(f"✅ Loyalty status retrieved: {tier} tier, {points} points")
+        
+    except Exception as e:
+        logger.error(f"❌ Loyalty worker failed: {e}")
+        state["response"] = "I'm having trouble fetching your loyalty details right now. Please try again."
+    
+    return state
+async def call_fulfillment_worker(state: SalesAgentState) -> SalesAgentState:
+    """Check order fulfillment status and tracking."""
+    logger.info("📞 Calling Fulfillment Worker...")
+    
+    state["worker_service"] = "fulfillment"
+    state["worker_url"] = WORKER_SERVICES["fulfillment"]
+    
+    try:
+        # Extract order_id from entities or message
+        entities = state.get("entities", {})
+        order_id = entities.get("order_id")
+        
+        logger.info(f"📋 Initial entities: {entities}")
+        logger.info(f"📦 Order ID from entities: {order_id}")
+        
+        # If no order_id in entities, try to find it in the message
+        if not order_id:
+            message = state.get("message", "")
+            logger.info(f"📝 Searching for order ID in message: {message}")
+            import re
+            # Look for patterns like ORD-xxx, ORD_xxx, or ORD000894 (must have digit or special char after ORD)
+            match = re.search(r'\b(ORD(?:[-_]?\d+[-\w]*|[-_]\w+))\b', message, re.IGNORECASE)
+            if match:
+                order_id = match.group(1).upper()
+                logger.info(f"✅ Found order ID via regex: {order_id}")
+            else:
+                logger.warning(f"⚠️  No order ID pattern found in message")
+        
+        # Validate order_id (must be more than just "ORDER" or "ORD")
+        if order_id and len(order_id) <= 3:
+            logger.warning(f"⚠️  Invalid order_id '{order_id}' - too short")
+            order_id = None
+        
+        if not order_id:
+            state["response"] = (
+                "I can help you track your order! Please share your order ID "
+                "(it looks like ORD-XXXXXXXX) so I can check the status."
+            )
+            state["cards"] = []
+            logger.info("⚠️  No order ID provided, requesting from user")
+            return state
+        
+        logger.info(f"🔍 Using order_id: {order_id}")
+        
+        # Call fulfillment agent to get status
+        try:
+            response = await call_agent('fulfillment', {
+                'action': 'status',
+                'order_id': order_id
+            })
+            
+            logger.info(f"📥 Fulfillment response: {response}")
+            
+            # Fulfillment API returns { "data": { "fulfillment": {...} } } or direct fulfillment object
+            fulfillment = None
+            if response.get('data') and response['data'].get('fulfillment'):
+                fulfillment = response['data']['fulfillment']
+            elif response.get('fulfillment'):
+                fulfillment = response['fulfillment']
+            elif 'current_status' in response:
+                # Direct fulfillment object
+                fulfillment = response
+            
+            if fulfillment:
+                status = fulfillment.get('current_status', 'UNKNOWN')
+                tracking_id = fulfillment.get('tracking_id', 'N/A')
+                courier = fulfillment.get('courier_partner', 'N/A')
+                eta = fulfillment.get('eta', 'N/A')
+                
+                # Format user-friendly status message
+                status_messages = {
+                    'PROCESSING': '📦 Your order is being processed and packed.',
+                    'PACKED': '✅ Your order has been packed and is ready for shipment.',
+                    'SHIPPED': '🚚 Your order has been shipped!',
+                    'OUT_FOR_DELIVERY': '🏃 Your order is out for delivery!',
+                    'DELIVERED': '🎉 Your order has been delivered!'
+                }
+                
+                status_msg = status_messages.get(status, f"Status: {status}")
+                
+                state["response"] = (
+                    f"Order {order_id}:\n\n"
+                    f"{status_msg}\n\n"
+                    f"📍 Tracking ID: {tracking_id}\n"
+                    f"🚛 Courier: {courier}\n"
+                    f"📅 ETA: {eta}\n\n"
+                    "Need help with anything else?"
+                )
+                state["cards"] = []
+                logger.info(f"✅ Order status retrieved: {order_id} - {status}")
+            else:
+                state["response"] = f"I couldn't find order {order_id}. Please check the order ID and try again."
+                state["cards"] = []
+                logger.warning(f"⚠️  Order not found: {order_id}")
+        
+        except Exception as e:
+            logger.error(f"❌ Fulfillment API call failed: {e}")
+            state["response"] = (
+                f"I'm having trouble checking order {order_id} right now. "
+                "Please try again in a moment or contact support."
+            )
+            state["error"] = str(e)
+            state["cards"] = []
+        
+    except Exception as e:
+        logger.error(f"❌ Fulfillment worker failed: {e}")
+        state["response"] = "I'm having trouble accessing order tracking. Please try again."
         state["error"] = str(e)
         state["cards"] = []
     
@@ -727,6 +1099,7 @@ async def call_virtual_circles_worker(state: SalesAgentState) -> SalesAgentState
     return state
 
 
+
 async def call_fallback_worker(state: SalesAgentState) -> SalesAgentState:
     """Fallback response when intent is unclear."""
     logger.info("📞 Using fallback response...")
@@ -769,6 +1142,8 @@ def create_sales_agent_graph() -> StateGraph:
     workflow.add_node("recommendation_worker", call_recommendation_worker)
     workflow.add_node("inventory_worker", call_inventory_worker)
     workflow.add_node("payment_worker", call_payment_worker)
+    workflow.add_node("loyalty_worker", call_loyalty_worker)
+    workflow.add_node("fulfillment_worker", call_fulfillment_worker)
     workflow.add_node("virtual_circles_worker", call_virtual_circles_worker)
     workflow.add_node("fallback_worker", call_fallback_worker)
     
@@ -783,10 +1158,12 @@ def create_sales_agent_graph() -> StateGraph:
             "recommendation_worker": "recommendation_worker",
             "inventory_worker": "inventory_worker",
             "payment_worker": "payment_worker",
+            "loyalty_worker": "loyalty_worker",
             "comparison_worker": "recommendation_worker",
             "trend_worker": "recommendation_worker",
             "gifting_worker": "recommendation_worker",
-            "support_worker": "fallback_worker",
+            "support_worker": "fulfillment_worker",
+            "fulfillment_worker": "fulfillment_worker",
             "virtual_circles_worker": "virtual_circles_worker",
             "fallback_worker": "fallback_worker",
         }
@@ -796,6 +1173,8 @@ def create_sales_agent_graph() -> StateGraph:
     workflow.add_edge("recommendation_worker", END)
     workflow.add_edge("inventory_worker", END)
     workflow.add_edge("payment_worker", END)
+    workflow.add_edge("loyalty_worker", END)
+    workflow.add_edge("fulfillment_worker", END)
     workflow.add_edge("virtual_circles_worker", END)
     workflow.add_edge("fallback_worker", END)
     
