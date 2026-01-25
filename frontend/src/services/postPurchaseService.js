@@ -80,6 +80,35 @@ export const getUserReturns = async (userId) => {
   return apiCall(`${API_ENDPOINTS.POST_PURCHASE_RETURNS}/${userId}`);
 };
 
+/**
+ * Get Groq AI outfit suggestions for a purchased product
+ * @param {Object} payload - Outfit request payload
+ * @returns {Promise<Object>} Styling recommendations
+ */
+/**
+ * Submit post-purchase feedback
+ * @param {Object} payload - Feedback payload
+ * @returns {Promise<Object>} Feedback acknowledgement
+ */
+export const submitFeedback = async (payload) => {
+  return apiCall(API_ENDPOINTS.POST_PURCHASE_FEEDBACK, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+/**
+ * Register a freshly completed order so post-purchase flows can reference it
+ * @param {Object} payload - Order payload captured after payment
+ * @returns {Promise<Object>} Stored order details
+ */
+export const registerPostPurchaseOrder = async (payload) => {
+  return apiCall(API_ENDPOINTS.POST_PURCHASE_REGISTER_ORDER, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
 export default {
   getReturnReasons,
   getIssueTypes,
@@ -87,4 +116,6 @@ export default {
   initiateExchange,
   raiseComplaint,
   getUserReturns,
+  submitFeedback,
+  registerPostPurchaseOrder,
 };

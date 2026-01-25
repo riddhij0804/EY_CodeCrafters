@@ -216,6 +216,22 @@ export const salesAgentService = {
   },
 
   /**
+   * Get AI-powered outfit suggestions from the stylist agent
+   * Triggered immediately after a successful purchase
+   */
+  getStylistSuggestions: async (payload) => {
+    try {
+      return await apiCall(API_ENDPOINTS.STYLIST_OUTFIT_SUGGESTIONS, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    } catch (error) {
+      console.error('Stylist suggestions error:', error);
+      throw error;
+    }
+  },
+
+  /**
    * Get products from CSV data
    */
   getProducts: async (filters = {}) => {
