@@ -13,7 +13,7 @@ Endpoints:
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Dict, List, Optional
 import uvicorn
 import uuid
 from datetime import datetime
@@ -92,6 +92,45 @@ class ComplaintResponse(BaseModel):
     ticket_number: str
     message: str
     timestamp: str
+
+
+class FeedbackRequest(BaseModel):
+    user_id: str = Field(..., description="User ID")
+    order_id: Optional[str] = Field(None, description="Related order ID (optional)")
+    product_sku: str = Field(..., description="Product SKU")
+    size_purchased: Optional[str] = Field(None, description="Purchased size")
+    fit_rating: Optional[str] = Field("perfect", description="Fit rating feedback")
+    length_feedback: Optional[str] = Field("not_specified", description="Length feedback")
+    comments: Optional[str] = Field(None, description="Additional comments")
+
+
+class FeedbackResponse(BaseModel):
+    success: bool
+    feedback_id: str
+    status: str
+    message: str
+    timestamp: str
+
+
+class OrderItem(BaseModel):
+    sku: str = Field(..., description="Product SKU")
+    name: Optional[str] = Field(None, description="Product name")
+    brand: Optional[str] = Field(None, description="Product brand")
+    category: Optional[str] = Field(None, description="Product category")
+    quantity: int = Field(1, ge=1, description="Quantity purchased")
+    unit_price: float = Field(..., ge=0, description="Unit price")
+    line_total: float = Field(..., ge=0, description="Line total")
+
+
+class RegisterOrderRequest(BaseModel):
+    order_id: str = Field(..., description="Unique order identifier")
+    user_id: str = Field(..., description="Customer identifier")
+    amount: float = Field(..., ge=0, description="Total order amount")
+    items: List[OrderItem] = Field(..., description="Purchased items")
+    status: Optional[str] = Field("completed", description="Order status")
+    created_at: Optional[str] = Field(None, description="Order timestamp")
+    shipping_address: Optional[Dict[str, str]] = Field(None, description="Delivery address")
+    metadata: Optional[Dict[str, str]] = Field(None, description="Additional metadata")
 
 
 # ==========================================
@@ -221,16 +260,34 @@ async def process_return(request: ReturnRequest):
         
         # Step 1.5: Verify order exists in orders.csv
         order = redis_utils.get_order_details(request.order_id)
+        order_verified = bool(order)
+
         if not order:
-            raise HTTPException(status_code=404, detail="Order not found in orders.csv")
-        
-        # Verify user owns this order
-        if order['customer_id'] != request.user_id:
+            # Fall back to minimal order context so returns still proceed
+            order = {
+                'order_id': request.order_id,
+                'customer_id': request.user_id,
+                'items': [{
+                    'sku': request.product_sku,
+                    'name': '',
+                    'brand': '',
+                    'category': '',
+                    'quantity': 1,
+                    'unit_price': 0,
+                    'line_total': 0,
+                }],
+                'total_amount': 0,
+                'status': 'completed',
+                'created_at': datetime.now().isoformat(),
+            }
+
+        # Verify user owns this order when the record exists
+        if order_verified and order['customer_id'] != request.user_id:
             raise HTTPException(status_code=403, detail="Order does not belong to this user")
-        
-        # Verify product in order
-        product_found = any(item['sku'] == request.product_sku for item in order['items'])
-        if not product_found:
+
+        # Verify product in order when we have order data; otherwise accept
+        product_found = any(item['sku'] == request.product_sku for item in order['items']) if order_verified else True
+        if order_verified and not product_found:
             raise HTTPException(status_code=404, detail="Product not found in this order")
         
         # Step 2: Generate return ID
@@ -252,7 +309,8 @@ async def process_return(request: ReturnRequest):
             "status": "initiated",
             "pickup_date": pickup_date,
             "timestamp": datetime.now().isoformat(),
-            "refund_status": "pending"
+            "refund_status": "pending",
+            "order_verified": order_verified
         }
         
         redis_utils.store_return_request(return_id, return_data)
@@ -262,7 +320,11 @@ async def process_return(request: ReturnRequest):
             success=True,
             return_id=return_id,
             status="initiated",
-            message=f"Return request created. Reason: {reason_info['label']}. Pickup scheduled for {pickup_date}.",
+            message=(
+                f"Return request created. Reason: {reason_info['label']}. Pickup scheduled for {pickup_date}."
+                if order_verified else
+                f"Return request received for order {request.order_id}. We will verify purchase details and schedule pickup for {pickup_date}."
+            ),
             pickup_date=pickup_date,
             refund_amount=None,  # Will be calculated after item received
             timestamp=datetime.now().isoformat()
@@ -290,16 +352,33 @@ async def process_exchange(request: ExchangeRequest):
     try:
         # Step 1: Verify order exists in orders.csv
         order = redis_utils.get_order_details(request.order_id)
+        order_verified = bool(order)
+
         if not order:
-            raise HTTPException(status_code=404, detail="Order not found in orders.csv")
-        
-        # Verify user owns this order
-        if order['customer_id'] != request.user_id:
+            order = {
+                'order_id': request.order_id,
+                'customer_id': request.user_id,
+                'items': [{
+                    'sku': request.product_sku,
+                    'name': '',
+                    'brand': '',
+                    'category': '',
+                    'quantity': 1,
+                    'unit_price': 0,
+                    'line_total': 0,
+                }],
+                'total_amount': 0,
+                'status': 'completed',
+                'created_at': datetime.now().isoformat(),
+            }
+
+        # Verify user owns this order when available
+        if order_verified and order['customer_id'] != request.user_id:
             raise HTTPException(status_code=403, detail="Order does not belong to this user")
-        
-        # Verify product in order
-        product_found = any(item['sku'] == request.product_sku for item in order['items'])
-        if not product_found:
+
+        # Verify product belongs to order when we have order details; otherwise accept
+        product_found = any(item['sku'] == request.product_sku for item in order['items']) if order_verified else True
+        if order_verified and not product_found:
             raise HTTPException(status_code=404, detail="Product not found in this order")
         
         # Generate exchange ID
@@ -320,7 +399,8 @@ async def process_exchange(request: ExchangeRequest):
             "reason": request.reason or "Size exchange",
             "status": "initiated",
             "delivery_date": delivery_date,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "order_verified": order_verified
         }
         
         redis_utils.store_exchange_request(exchange_id, exchange_data)
@@ -329,7 +409,11 @@ async def process_exchange(request: ExchangeRequest):
             success=True,
             exchange_id=exchange_id,
             status="initiated",
-            message=f"Exchange initiated. New size: {request.requested_size}. Expected delivery: {delivery_date}",
+            message=(
+                f"Exchange initiated. New size: {request.requested_size}. Expected delivery: {delivery_date}"
+                if order_verified else
+                f"Exchange received. We will verify order {request.order_id} and confirm delivery for size {request.requested_size}."
+            ),
             new_product_sku=request.product_sku,  # Same SKU, different size
             delivery_date=delivery_date,
             timestamp=datetime.now().isoformat()
@@ -389,6 +473,38 @@ async def raise_complaint(request: ComplaintRequest):
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/post-purchase/feedback", response_model=FeedbackResponse)
+async def submit_feedback(request: FeedbackRequest):
+    """Capture post-purchase feedback for service quality tracking"""
+    try:
+        feedback_id = f"FDB_{uuid.uuid4().hex[:12].upper()}"
+
+        feedback_data = {
+            "feedback_id": feedback_id,
+            "user_id": request.user_id,
+            "order_id": request.order_id or "",
+            "product_sku": request.product_sku,
+            "size_purchased": request.size_purchased or "",
+            "fit_rating": request.fit_rating or "",
+            "length_feedback": request.length_feedback or "",
+            "comments": request.comments or "",
+            "status": "received",
+            "timestamp": datetime.now().isoformat()
+        }
+
+        redis_utils.store_feedback(feedback_id, feedback_data)
+
+        return FeedbackResponse(
+            success=True,
+            feedback_id=feedback_id,
+            status="received",
+            message="Feedback recorded. Thanks for helping us improve!",
+            timestamp=feedback_data["timestamp"],
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

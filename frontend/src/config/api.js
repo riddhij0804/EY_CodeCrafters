@@ -61,9 +61,11 @@ export const API_ENDPOINTS = {
   POST_PURCHASE_RETURN: `${API_BASE_URL}:8005/post-purchase/return`,
   POST_PURCHASE_EXCHANGE: `${API_BASE_URL}:8005/post-purchase/exchange`,
   POST_PURCHASE_COMPLAINT: `${API_BASE_URL}:8005/post-purchase/complaint`,
+  POST_PURCHASE_FEEDBACK: `${API_BASE_URL}:8005/post-purchase/feedback`,
   POST_PURCHASE_RETURN_REASONS: `${API_BASE_URL}:8005/post-purchase/return-reasons`,
   POST_PURCHASE_RETURNS: `${API_BASE_URL}:8005/post-purchase/returns`,
   POST_PURCHASE_ISSUE_TYPES: `${API_BASE_URL}:8005/post-purchase/issue-types`,
+  POST_PURCHASE_REGISTER_ORDER: `${API_BASE_URL}:8005/post-purchase/register-order`,
 
   // Stylist Agent
   STYLIST: `${API_BASE_URL}:8006`,
@@ -71,6 +73,7 @@ export const API_ENDPOINTS = {
   STYLIST_CARE_INSTRUCTIONS: `${API_BASE_URL}:8006/stylist/care-instructions`,
   STYLIST_OCCASION: `${API_BASE_URL}:8006/stylist/occasion-styling`,
   STYLIST_SEASONAL: `${API_BASE_URL}:8006/stylist/seasonal-styling`,
+  STYLIST_FIT_FEEDBACK: `${API_BASE_URL}:8006/stylist/fit-feedback`,
   
   // Data API (CSV Data)
   DATA_API: `${API_BASE_URL}:8007`,
