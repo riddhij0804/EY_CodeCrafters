@@ -1,0 +1,92 @@
+"""
+Products repository: reads products from Supabase.
+
+Expects a 'products' table with columns matching products.csv
+"""
+import pandas as pd
+from typing import Optional, List, Dict, Any
+from ..supabase_client import select, is_enabled
+
+# Column mapping: Supabase snake_case -> CSV PascalCase/original names
+COLUMN_MAPPING = {
+    "product_display_name": "ProductDisplayName",
+    "review_count": "review count",
+    "article_type": "articleType",
+    "base_colour": "baseColour",
+    "master_category": "masterCategory",
+    "sub_category": "subCategory",
+    "gender_article_type": "genderArticleType",
+}
+
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename Supabase columns to match CSV column names."""
+    rename_map = {k: v for k, v in COLUMN_MAPPING.items() if k in df.columns}
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    return df
+
+
+def get_all_products() -> Optional[pd.DataFrame]:
+    """
+    Get all products from Supabase as a DataFrame.
+    
+    Returns:
+        DataFrame with all products, or None on error/disabled
+    """
+    if not is_enabled():
+        return None
+    
+    try:
+        rows = select("products")
+        if not rows:
+            print("[products_repo] No products found in Supabase")
+            return None
+        
+        df = pd.DataFrame(rows)
+        df = _normalize_columns(df)
+        print(f"[products_repo] Loaded {len(df)} products from Supabase")
+        return df
+    except Exception as e:
+        print(f"[products_repo] Error loading products: {e}")
+        return None
+
+
+def get_product_by_sku(sku: str) -> Optional[Dict[str, Any]]:
+    """Get a single product by SKU."""
+    if not is_enabled():
+        return None
+    
+    try:
+        rows = select("products", params=f"sku=eq.{sku}")
+        if not rows:
+            return None
+        # Normalize keys in the dict
+        row = rows[0]
+        for old_key, new_key in COLUMN_MAPPING.items():
+            if old_key in row:
+                row[new_key] = row.pop(old_key)
+        return row
+    except Exception as e:
+        print(f"[products_repo] Error fetching SKU={sku}: {e}")
+        return None
+
+
+def get_products_by_category(category: str) -> Optional[List[Dict[str, Any]]]:
+    """Get products filtered by category."""
+    if not is_enabled():
+        return None
+    
+    try:
+        rows = select("products", params=f"category=eq.{category}")
+        if not rows:
+            return None
+        # Normalize keys in each dict
+        for row in rows:
+            for old_key, new_key in COLUMN_MAPPING.items():
+                if old_key in row:
+                    row[new_key] = row.pop(old_key)
+        return rows
+    except Exception as e:
+        print(f"[products_repo] Error fetching category={category}: {e}")
+        return None

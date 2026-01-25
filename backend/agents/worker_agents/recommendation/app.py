@@ -95,32 +95,105 @@ app.add_middleware(
 )
 
 # ==========================================
-# DATA LOADING
+# DATA LOADING (Supabase first, CSV fallback)
 # ==========================================
 
-# Load CSV data
+# Add backend to path for db package
+import sys
+backend_path = Path(__file__).parent.parent.parent.parent
+if str(backend_path) not in sys.path:
+    sys.path.insert(0, str(backend_path))
+
+# Load CSV data as fallback
 DATA_PATH = Path(__file__).parent.parent.parent.parent / "data"
 
-try:
-    products_df = pd.read_csv(DATA_PATH / "products.csv")
-    customers_df = pd.read_csv(DATA_PATH / "customers.csv")
-    orders_df = pd.read_csv(DATA_PATH / "orders.csv")
-    inventory_df = pd.read_csv(DATA_PATH / "inventory.csv")
+def load_csv_fallback():
+    """Load data from CSV files."""
+    try:
+        products = pd.read_csv(DATA_PATH / "products.csv")
+        customers = pd.read_csv(DATA_PATH / "customers.csv")
+        orders = pd.read_csv(DATA_PATH / "orders.csv")
+        inventory = pd.read_csv(DATA_PATH / "inventory.csv")
 
-    # Normalize column naming differences between generated datasets
-    if "quantity" in inventory_df.columns and "qty" not in inventory_df.columns:
-        inventory_df = inventory_df.rename(columns={"quantity": "qty"})
+        # Normalize column naming differences
+        if "quantity" in inventory.columns and "qty" not in inventory.columns:
+            inventory = inventory.rename(columns={"quantity": "qty"})
+        
+        return products, customers, orders, inventory
+    except Exception as e:
+        logger.error(f"❌ Failed to load CSV data: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+def load_data_with_supabase_fallback():
+    """Load data from Supabase first, fall back to CSV."""
+    products_df = None
+    customers_df = None
+    inventory_df = None
+    orders_df = None
     
-    logger.info(f"✅ Loaded {len(products_df)} products")
-    logger.info(f"✅ Loaded {len(customers_df)} customers")
-    logger.info(f"✅ Loaded {len(orders_df)} orders")
-    logger.info(f"✅ Loaded {len(inventory_df)} inventory records")
-except Exception as e:
-    logger.error(f"❌ Failed to load data: {e}")
-    products_df = pd.DataFrame()
-    customers_df = pd.DataFrame()
-    orders_df = pd.DataFrame()
-    inventory_df = pd.DataFrame()
+    try:
+        from db.repositories import products_repo, customers_repo, inventory_repo
+        
+        # Try Supabase for products
+        products_df = products_repo.get_all_products()
+        if products_df is not None:
+            logger.info(f"✅ Loaded {len(products_df)} products from Supabase")
+        
+        # Try Supabase for customers
+        customers_df = customers_repo.get_all_customers()
+        if customers_df is not None:
+            logger.info(f"✅ Loaded {len(customers_df)} customers from Supabase")
+        
+        # Inventory - get all rows
+        try:
+            from db.supabase_client import select, is_enabled
+            if is_enabled():
+                inv_rows = select("inventory")
+                if inv_rows:
+                    inventory_df = pd.DataFrame(inv_rows)
+                    if "quantity" in inventory_df.columns and "qty" not in inventory_df.columns:
+                        inventory_df = inventory_df.rename(columns={"quantity": "qty"})
+                    logger.info(f"✅ Loaded {len(inventory_df)} inventory records from Supabase")
+        except Exception as e:
+            logger.warning(f"⚠️ Supabase inventory load failed: {e}")
+        
+        # Orders - get all rows
+        try:
+            from db.supabase_client import select, is_enabled
+            if is_enabled():
+                order_rows = select("orders")
+                if order_rows:
+                    orders_df = pd.DataFrame(order_rows)
+                    logger.info(f"✅ Loaded {len(orders_df)} orders from Supabase")
+        except Exception as e:
+            logger.warning(f"⚠️ Supabase orders load failed: {e}")
+            
+    except Exception as e:
+        logger.warning(f"⚠️ Supabase import/load failed: {e}")
+    
+    # Load CSV fallback for any missing data
+    csv_products, csv_customers, csv_orders, csv_inventory = load_csv_fallback()
+    
+    if products_df is None or products_df.empty:
+        products_df = csv_products
+        logger.info(f"📦 Using CSV fallback: {len(products_df)} products")
+    
+    if customers_df is None or customers_df.empty:
+        customers_df = csv_customers
+        logger.info(f"📦 Using CSV fallback: {len(customers_df)} customers")
+    
+    if orders_df is None or orders_df.empty:
+        orders_df = csv_orders
+        logger.info(f"📦 Using CSV fallback: {len(orders_df)} orders")
+    
+    if inventory_df is None or inventory_df.empty:
+        inventory_df = csv_inventory
+        logger.info(f"📦 Using CSV fallback: {len(inventory_df)} inventory records")
+    
+    return products_df, customers_df, orders_df, inventory_df
+
+# Load data at startup
+products_df, customers_df, orders_df, inventory_df = load_data_with_supabase_fallback()
 
 # ==========================================
 # REQUEST/RESPONSE MODELS

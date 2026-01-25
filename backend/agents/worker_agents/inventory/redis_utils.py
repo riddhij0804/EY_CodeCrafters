@@ -106,12 +106,38 @@ def get_stock(sku: str) -> dict:
     """
     Get stock levels for a SKU across all locations.
     
+    Tries Supabase first (if FEATURE_SUPABASE_READ=true), then falls back to Redis.
+    
     Returns:
         {
             "online": int,
             "stores": {"store_id": int, ...}
         }
     """
+    # Try Supabase first (when enabled)
+    try:
+        import sys
+        from pathlib import Path
+        # Add backend to path so db package is importable
+        backend_path = Path(__file__).resolve().parent.parent.parent.parent
+        if str(backend_path) not in sys.path:
+            sys.path.insert(0, str(backend_path))
+        
+        from db.repositories import inventory_repo
+        
+        supabase_result = inventory_repo.get_stock(sku)
+        if supabase_result is not None:
+            print(f"✅ Source: SUPABASE for SKU={sku}")
+            return {
+                "online": supabase_result.get("online", 0),
+                "stores": supabase_result.get("stores", {})
+            }
+    except Exception as e:
+        print(f"⚠️ Supabase read failed for SKU={sku}: {e}")
+    
+    # Fallback to Redis
+    print(f"📦 Source: REDIS/CSV fallback for SKU={sku}")
+    
     if not redis_client:
         return {"online": 0, "stores": {}}
     
