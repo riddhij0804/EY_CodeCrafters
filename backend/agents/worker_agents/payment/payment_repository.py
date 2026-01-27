@@ -116,18 +116,48 @@ def _prepare_supabase_payload(record: Dict[str, str]) -> Dict[str, object]:
     supabase_payload.setdefault("status", record.get("status", "success"))
     return supabase_payload
 
+def _ensure_idempotency(idempotency_key: str) -> None:
+    existing = supabase_client.select_one(
+        "idempotency",
+        params=f"idempotency_key=eq.{idempotency_key}",
+    )
+
+    if not existing:
+        supabase_client.upsert(
+            "idempotency",
+            {
+                "idempotency_key": idempotency_key,
+                "created_at": datetime.utcnow().isoformat(),
+            },
+            conflict_column="idempotency_key",
+        )
 
 def _sync_to_supabase(record: Dict[str, str]) -> None:
     if not supabase_client.is_write_enabled():
         return
 
     payload = _prepare_supabase_payload(record)
-
     try:
+        # 1️⃣ Ensure idempotency exists FIRST
+        _ensure_idempotency(payload["idempotency_key"])
+        # 2️⃣ Insert payment (FK now valid)
         supabase_client.upsert(
-            _SUPABASE_TABLE,
+            "payments",
             payload,
             conflict_column="payment_id",
+        )
+        # 3️⃣ Optionally store result
+        supabase_client.update(
+            "idempotency",
+            {
+                "result": {
+                    "payment_id": payload["payment_id"],
+                    "order_id": payload["order_id"],
+                    "status": payload["status"],
+                    "amount": payload["amount_rupees"],
+                }
+            },
+            params=f"idempotency_key=eq.{payload['idempotency_key']}",
         )
         logger.info("[payment_repository] Synced payment %s to Supabase", record.get("payment_id"))
     except Exception as exc:  # broad to prevent payment flow failures

@@ -728,10 +728,25 @@ const Chat = () => {
         notes.address_building = shippingAddress.building || '';
       }
 
+      if (!productDetails) {
+        alert('No product selected for payment.');
+        setIsPaymentProcessing(false);
+        paymentInFlightRef.current = false;
+        return;
+      }
+
+      const quantity = Number(productDetails.quantity) > 0 ? Number(productDetails.quantity) : 1;
+      const unitPrice = Number(productDetails.price) || parsedAmount / quantity;
+
       const orderPayload = {
         amount_rupees: parsedAmount,
         currency: 'INR',
         notes,
+        items: [{
+          sku: productDetails.sku,
+          qty: quantity,
+          unit_price: unitPrice
+        }],
       };
 
       if (normalizedDetails.orderId) {
@@ -780,7 +795,7 @@ const Chat = () => {
               amount_rupees: parsedAmount,
               user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone,
               method: 'razorpay',
-              order_id: normalizedDetails.orderId,
+              order_id: orderResponse.order_id,
             });
 
             // Refresh loyalty points after payment

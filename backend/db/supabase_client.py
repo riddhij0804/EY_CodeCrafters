@@ -178,3 +178,36 @@ def upsert(
     except requests.exceptions.RequestException as exc:
         logger.warning("[supabase_client] Upsert request error for %s: %s", table, exc)
         raise
+
+
+def update(
+    table: str,
+    updates: Dict[str, Any],
+    params: str,
+    timeout: int = 10,
+) -> Optional[List[Dict[str, Any]]]:
+    """Update rows in a Supabase table using PATCH."""
+    if not is_write_enabled():
+        logger.debug("[supabase_client] Update skipped; feature disabled")
+        return None
+
+    url = _build_url(table) + "?" + params
+
+    headers = _get_headers(_get_write_key())
+
+    try:
+        resp = requests.patch(url, headers=headers, json=updates, timeout=timeout)
+        resp.raise_for_status()
+        if resp.content:
+            return resp.json()
+        return None
+    except requests.exceptions.HTTPError as exc:
+        status = getattr(exc.response, "status_code", "N/A")
+        body = getattr(exc.response, "text", str(exc))[:400]
+        logger.warning(
+            "[supabase_client] Update failed for %s (%s): %s", table, status, body
+        )
+        raise
+    except requests.exceptions.RequestException as exc:
+        logger.warning("[supabase_client] Update request error for %s: %s", table, exc)
+        raise

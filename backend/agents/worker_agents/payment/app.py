@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 import orders_repository
+from db import supabase_client
 
 app = FastAPI(
     title="Payment Agent",
@@ -243,6 +244,7 @@ class RazorpayCreateOrderRequest(BaseModel):
     currency: str = Field("INR", description="Three letter currency code")
     receipt: Optional[str] = Field(None, description="Optional receipt identifier shown in Razorpay dashboard")
     notes: Dict[str, str] = Field(default_factory=dict, description="Additional metadata forwarded to Razorpay")
+    items: Optional[list] = Field(default_factory=list)  
 
 
 class RazorpayVerifyRequest(BaseModel):
@@ -275,6 +277,7 @@ async def root():
 
 @razorpay_router.post("/create-order")
 async def create_razorpay_order(payload: RazorpayCreateOrderRequest):
+    print("🟢 CREATE ORDER ITEMS FROM FRONTEND:", payload.items)
     """Create a Razorpay order in test mode (no real charge)."""
     client = _ensure_razorpay_client()
 
@@ -306,6 +309,17 @@ async def create_razorpay_order(payload: RazorpayCreateOrderRequest):
 
     order = client.order.create(order_payload)
 
+    # Validate items are provided
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="items are required")
+
+    orders_repository.upsert_order_record({
+        "order_id": app_order_id,                 # EXISTS HERE
+        "customer_id": payload.notes.get("customer_id"),
+        "status": "created",                      # ORDER NOT PAID YET
+        "items": payload.items,                   # SOURCE OF TRUTH
+        "created_at": datetime.now().isoformat(),
+    })
     return {
         "order": order,
         "razorpay_key_id": RAZORPAY_KEY_ID,
@@ -322,6 +336,7 @@ async def get_next_order_id():
 
 @razorpay_router.post("/verify-payment")
 async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
+    print("🔥🔥🔥 VERIFY PAYMENT HIT 🔥🔥🔥", flush=True)
     """Record a Razorpay test payment as successful and persist it."""
     if not payload.razorpay_payment_id or not payload.razorpay_order_id:
         raise HTTPException(status_code=400, detail="razorpay_payment_id and razorpay_order_id are required")
@@ -342,33 +357,126 @@ async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
         gst_value = Decimal("0.00")
 
     method = (payload.method or "upi").lower()
-    idempotency_key = payload.idempotency_key or f"idemp_{payload.razorpay_payment_id}"
     timestamp = datetime.now().isoformat()
 
+
     customer_id = _resolve_customer_id(payload.user_id, None)
-    preferred_order_id = payload.order_id if payload.order_id and orders_repository.is_valid_order_id(payload.order_id) else None
-    original_order_ref = payload.razorpay_order_id
-    canonical_order_id = preferred_order_id
-    if not canonical_order_id:
-        canonical_order_id = (
-            original_order_ref
-            if orders_repository.is_valid_order_id(original_order_ref)
-            else orders_repository.generate_next_order_id()
+
+    if not payload.order_id:
+        raise HTTPException(
+            status_code=400,
+            detail="order_id (ORDxxxx) is required"
         )
+
+    if not orders_repository.is_valid_order_id(payload.order_id):
+        raise HTTPException(status_code=400, detail="Invalid order_id format")
+
+    canonical_order_id = payload.order_id
+    
+
+    logger.warning(f"🟡 CANONICAL ORDER ID: {canonical_order_id}")
+
+
+    order = supabase_client.select_one(
+    "orders",
+    f"order_id=eq.{canonical_order_id}"
+    )
+
+    logger.warning(f"🟡 ORDER FROM SUPABASE: {order}")
+
+    items_payload = order.get("items", [])
+
+    if not items_payload:
+        raise HTTPException(status_code=400, detail="Order items missing")
+
+    logger.warning(f"🟢 ITEMS FROM ORDER: {items_payload}")
+
+
+    # Normalize items for DB
+    normalized_items = []
+    for item in items_payload:
+        qty = int(item.get("qty", 0))
+        unit_price = float(item.get("unit_price", 0))
+
+        normalized_items.append({
+            "sku": item.get("sku"),
+            "qty": qty,
+            "unit_price": unit_price,
+            "line_total": round(qty * unit_price, 2),
+        })
+
+    logger.warning(f"🟣 NORMALIZED ITEMS: {normalized_items}")
+
+
+    # Idempotency for webhook
+    idempotency_key = payload.idempotency_key or f"idemp_{payload.razorpay_payment_id}"
 
     try:
         orders_repository.upsert_order_record(
                 {
                     "order_id": canonical_order_id,
                     "customer_id": customer_id,
-                "items": json.dumps([]),
-                "total_amount": float(amount_rupees),
-                "status": "paid",
-                "created_at": timestamp,
-            }
+                    "total_amount": float(amount_rupees),
+                    "status": "paid",
+                    "items": normalized_items,
+                    "created_at": timestamp,
+                }
         )
     except Exception as exc:
         logger.warning(f"⚠️  Failed to ensure order {canonical_order_id}: {exc}")
+
+    # Update customer purchase_history and inventory on payment success
+    try:
+        if customer_id:
+            try:
+                customer = supabase_client.select_one('customers', f'customer_id=eq.{customer_id}')
+            except Exception:
+                customer = None
+            if customer:
+                purchase_history = customer.get('purchase_history', [])
+                if purchase_history is None:
+                    purchase_history = []
+                elif isinstance(purchase_history, str):
+                    try:
+                        purchase_history = json.loads(purchase_history)
+                    except Exception:
+                        purchase_history = []
+                elif not isinstance(purchase_history, list):
+                    purchase_history = []
+                for item in normalized_items:
+                    purchase_history.append({
+                        'order_id': canonical_order_id,
+                        'sku': item['sku'],
+                        'qty': item['qty'],
+                        'unit_price': item['unit_price'],
+                        'amount': item['line_total'],
+                        'date': timestamp
+                    })
+                supabase_client.upsert('customers', {
+                    'customer_id': customer_id,
+                    'purchase_history': purchase_history
+                }, conflict_column='customer_id')
+        else:
+            logger.info(f"⚠️  No customer_id resolved for payment {payment_id}, skipping purchase_history update")
+
+        # Decrease inventory
+        store_id = 'STORE001'  # TODO: Find nearest store based on delivery address
+        for item in normalized_items:
+            sku = item['sku']
+            qty = item['qty']
+            try:
+                inventory = supabase_client.select_one('inventory', f'sku=eq.{sku}&store_id=eq.{store_id}')
+            except Exception:
+                inventory = None
+            if inventory:
+                current_qty = inventory['quantity']
+                new_qty = max(0, current_qty - qty)
+                supabase_client.update('inventory', {'quantity': new_qty}, f'sku=eq.{sku}&store_id=eq.{store_id}')
+            else:
+                logger.warning(f"⚠️  Inventory not found for sku {sku}, store {store_id}, skipping update")
+
+    except Exception as exc:
+        logger.warning(f"⚠️  Failed to update customer/inventory for order {canonical_order_id}: {exc}")
 
     payment_id = payment_repository.generate_next_payment_id()
     payment_id = payment_repository.upsert_payment_record(
@@ -390,7 +498,6 @@ async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
         "idempotency_key": idempotency_key,
         "razorpay_signature": payload.razorpay_signature,
         "gateway_payment_id": payload.razorpay_payment_id,
-        "original_order_reference": original_order_ref,
     }
     if customer_id:
         metadata["customer_id"] = customer_id
@@ -448,7 +555,8 @@ async def process_payment(request: PaymentRequest):
             canonical_order_id = original_order_reference
         else:
             canonical_order_id = orders_repository.generate_next_order_id()
-
+        
+        
         customer_id = _resolve_customer_id(
             request.user_id,
             request.metadata if isinstance(request.metadata, dict) else None,
@@ -467,7 +575,6 @@ async def process_payment(request: PaymentRequest):
         cashback = redis_utils.calculate_cashback(request.amount, request.payment_method)
         
         # Step 5: Store transaction
-        timestamp = datetime.now().isoformat()
         metadata_payload = {
             "source": "process_payment",
             "original_order_reference": original_order_reference,
@@ -499,45 +606,28 @@ async def process_payment(request: PaymentRequest):
             "status": "success"
         })
         # Step 7: Award loyalty points after successful payment
-        loyalty_result = None
-        try:
-            # Call loyalty service to earn points (1 point per ₹10 spent)
-            loyalty_response = requests.post(
-                f"{LOYALTY_SERVICE_URL}/loyalty/earn-from-purchase",
-                params={"user_id": request.user_id, "amount_spent": request.amount},
-                timeout=5
-            )
-            if loyalty_response.ok:
-                loyalty_result = loyalty_response.json()
-                logger.info(f"✅ Loyalty points awarded: {loyalty_result.get('total_points_earned', 0)} points to user {request.user_id}")
-            else:
-                logger.warning(f"⚠️  Loyalty service returned {loyalty_response.status_code}")
-        except Exception as e:
-            logger.warning(f"⚠️  Failed to award loyalty points: {e}")
+        # Removed: now done directly in Supabase
         
         # Build response message
         response_message = f"{gateway_response['message']}. Cashback: ₹{cashback}"
-        if loyalty_result and loyalty_result.get('success'):
-            points_earned = loyalty_result.get('total_points_earned', 0)
-            response_message += f" | Earned {points_earned} loyalty points!"
-            if loyalty_result.get('tier_upgraded'):
-                new_tier = loyalty_result.get('current_tier')
-                response_message += f" 🏆 Upgraded to {new_tier}!"
+        
+        # Get items from metadata for updates
+        items_payload = []
+        if isinstance(request.metadata, dict):
+            items_payload = request.metadata.get('items', []) or []
         
         # Register / update order to ensure Supabase FK integrity
         try:
-            items_payload = []
-            if isinstance(request.metadata, dict):
-                items_payload = request.metadata.get('items', []) or []
-
-            orders_repository.upsert_order_record({
+            order_record = {
                 'order_id': canonical_order_id,
                 'customer_id': customer_id,
-                'items': items_payload,
                 'total_amount': round(request.amount, 2),
                 'status': 'paid',
                 'created_at': timestamp
-            })
+            }
+            order_record['items'] = items_payload
+
+            orders_repository.upsert_order_record(order_record)
             logger.info(f"✅ Order registered: {canonical_order_id} (payment: {payment_id})")
         except Exception as e:
             logger.warning(f"⚠️  Failed to register order {canonical_order_id}: {e}")
@@ -578,6 +668,74 @@ async def process_payment(request: PaymentRequest):
             )
         except Exception as exc:
             logger.warning(f"⚠️  Failed to persist payment record {payment_id}: {exc}")
+        
+        # Perform post-payment updates
+        try:
+            # Update customer
+            customer = supabase_client.select_one('customer', f'customer_id=eq.{customer_id}')
+            if not customer:
+                raise Exception("Customer not found")
+            
+            purchase_history = customer.get('purchase_history', [])
+            old_tier = customer.get('loyalty_tier', 'bronze')
+            for item in normalized_items:
+                purchase_history.append({
+                    'order_id': canonical_order_id,
+                    'sku': item['sku'],
+                    'qty': item['qty'],
+                    'amount': item.get('line_total', item['qty'] * item['unit_price']),
+                    'date': timestamp,
+                    'rating': item.get('rating', 0)
+                })
+
+            earned_points = request.amount * 0.02
+            loyalty_points = customer.get('loyalty_points', 0) + earned_points
+            tier = 'bronze'
+            if loyalty_points >= 1000:
+                tier = 'gold'
+            elif loyalty_points >= 500:
+                tier = 'silver'
+            
+            supabase_client.upsert('customer', {
+                'customer_id': customer_id,
+                'purchase_history': purchase_history,
+                'loyalty_points': loyalty_points,
+                'loyalty_tier': tier
+            }, conflict_column='customer_id')
+            
+            # Update inventory
+            store_id = 'STORE001'  # TODO: Find nearest store based on delivery address
+            for item in items_payload:
+                sku = item['sku']
+                qty = item['qty']
+                inventory = supabase_client.select_one('inventory', f'sku=eq.{sku}&store_id=eq.{store_id}')
+                if inventory:
+                    current_qty = inventory['quantity']
+                    new_qty = max(0, current_qty - qty)
+                    supabase_client.update('inventory', {'quantity': new_qty}, f'sku=eq.{sku}&store_id=eq.{store_id}')
+            
+            # Update response message
+            if earned_points > 0:
+                response_message += f" | Earned {earned_points} loyalty points!"
+            if tier != old_tier:
+                response_message += f" 🏆 Upgraded to {tier}!"
+            
+            # Finalize idempotency
+            response_dict = {
+                "success": True,
+                "transaction_id": payment_id,
+                "amount": request.amount,
+                "payment_method": request.payment_method,
+                "gateway_txn_id": gateway_response["gateway_txn_id"],
+                "cashback": cashback,
+                "message": response_message,
+                "timestamp": timestamp,
+                "order_id": canonical_order_id
+            }
+        
+        except Exception as e:
+            logger.error(f"Post-payment update failed: {e}")
+            # Do not mark as completed
         
         return PaymentResponse(
             success=True,
