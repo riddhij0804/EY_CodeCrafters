@@ -4,7 +4,7 @@
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import uvicorn
 import uuid
 from datetime import datetime
@@ -14,6 +14,8 @@ import logging
 import os
 import requests
 import csv
+import re
+import math
 print(">>> Razorpay router loaded")
 try:
     import razorpay
@@ -49,6 +51,352 @@ logger = logging.getLogger(__name__)
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 LOYALTY_SERVICE_URL = os.getenv("LOYALTY_SERVICE_URL", "http://localhost:8002")
+def _clean_store_identifier(value: Optional[Any]) -> Optional[str]:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        if candidate.lower().startswith("store:"):
+            candidate = candidate.split(":", 1)[1]
+        candidate = candidate.replace("-", "_").upper()
+        if candidate in {"ONLINE"}:
+            return "ONLINE"
+        if candidate.startswith("STORE_"):
+            return candidate
+        return f"STORE_{candidate}"
+    return None
+
+
+DEFAULT_STORE_ID = _clean_store_identifier(os.getenv("DEFAULT_STORE_ID")) or "STORE_MUMBAI"
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_token(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    sanitized = re.sub(r"[^a-z0-9\s]", " ", text)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    return sanitized or None
+
+
+CITY_ALIAS_OVERRIDES: Dict[str, str] = {
+    "bombay": "mumbai",
+    "navi mumbai": "mumbai",
+    "thane": "mumbai",
+    "delhi": "new delhi",
+    "delhi ncr": "new delhi",
+    "ncr": "new delhi",
+    "gurgaon": "new delhi",
+    "gurugram": "new delhi",
+    "noida": "new delhi",
+    "ghaziabad": "new delhi",
+    "bangalore": "bengaluru",
+    "bengalore": "bengaluru",
+    "bengaluru": "bengaluru",
+    "bengaluru urban": "bengaluru",
+    "bengaluru city": "bengaluru",
+    "pune": "pune",
+    "poona": "pune",
+    "chennai": "chennai",
+    "madras": "chennai",
+}
+
+
+STATE_ALIAS_OVERRIDES: Dict[str, str] = {
+    "maharashtra": "mumbai",
+    "delhi": "new delhi",
+    "nct of delhi": "new delhi",
+    "karnataka": "bengaluru",
+    "tamil nadu": "chennai",
+}
+
+
+def _load_store_catalog() -> tuple[Dict[str, Dict[str, Any]], Dict[str, str], Dict[str, str], Dict[str, str]]:
+    store_by_id: Dict[str, Dict[str, Any]] = {}
+    city_map: Dict[str, str] = {}
+    state_map: Dict[str, str] = {}
+    pin_map: Dict[str, str] = {}
+    try:
+        stores_path = Path(__file__).resolve().parents[3] / "data" / "stores.csv"
+        with stores_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                store_id = _clean_store_identifier(row.get("store_id"))
+                if not store_id:
+                    continue
+
+                city_norm = _normalize_token(row.get("city"))
+                state_norm = _normalize_token(row.get("state"))
+                lat = _to_float(row.get("latitude"))
+                lon = _to_float(row.get("longitude"))
+
+                store_by_id[store_id] = {
+                    "city": city_norm,
+                    "state": state_norm,
+                    "latitude": lat,
+                    "longitude": lon,
+                }
+
+                if city_norm and city_norm not in city_map:
+                    city_map[city_norm] = store_id
+                if state_norm and state_norm not in state_map:
+                    state_map[state_norm] = store_id
+
+                pincode = str(row.get("pincode") or "").strip()
+                digits = "".join(ch for ch in pincode if ch.isdigit())
+                for length in range(3, len(digits) + 1):
+                    prefix = digits[:length]
+                    if prefix:
+                        pin_map.setdefault(prefix, store_id)
+    except FileNotFoundError:
+        logger.warning("⚠️  stores.csv not found; store proximity defaults will use fallback")
+    except Exception as exc:
+        logger.warning(f"⚠️  Failed to load store catalog: {exc}")
+
+    return store_by_id, city_map, state_map, pin_map
+
+
+STORE_CATALOG, STORE_CITY_MAP, STORE_STATE_MAP, STORE_PIN_PREFIX_MAP = _load_store_catalog()
+
+
+def _match_store_by_city_name(value: Any) -> Optional[str]:
+    token = _normalize_token(value)
+    if not token:
+        return None
+
+    canonical = CITY_ALIAS_OVERRIDES.get(token, token)
+    if canonical in STORE_CITY_MAP:
+        return STORE_CITY_MAP[canonical]
+
+    for alias, target in CITY_ALIAS_OVERRIDES.items():
+        if alias in token and target in STORE_CITY_MAP:
+            return STORE_CITY_MAP[target]
+
+    for city_key, store_id in STORE_CITY_MAP.items():
+        if city_key in token:
+            return store_id
+
+    return None
+
+
+def _match_store_by_state(value: Any) -> Optional[str]:
+    token = _normalize_token(value)
+    if not token:
+        return None
+
+    canonical = STATE_ALIAS_OVERRIDES.get(token)
+    if canonical:
+        return STORE_CITY_MAP.get(canonical) or STORE_STATE_MAP.get(canonical)
+
+    if token in STORE_STATE_MAP:
+        return STORE_STATE_MAP[token]
+
+    for alias, target in STATE_ALIAS_OVERRIDES.items():
+        if alias in token:
+            return STORE_CITY_MAP.get(target) or STORE_STATE_MAP.get(target)
+
+    return None
+
+
+def _match_store_by_pincode(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if not digits:
+        return None
+
+    for length in range(len(digits), 2, -1):
+        prefix = digits[:length]
+        if prefix in STORE_PIN_PREFIX_MAP:
+            return STORE_PIN_PREFIX_MAP[prefix]
+
+    prefix3 = digits[:3]
+    return STORE_PIN_PREFIX_MAP.get(prefix3)
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
+def _match_store_by_coordinates(lat: Optional[float], lon: Optional[float]) -> Optional[str]:
+    if lat is None or lon is None:
+        return None
+
+    closest_store: Optional[str] = None
+    closest_distance: Optional[float] = None
+
+    for store_id, info in STORE_CATALOG.items():
+        store_lat = info.get("latitude")
+        store_lon = info.get("longitude")
+        if store_lat is None or store_lon is None:
+            continue
+
+        distance = _haversine_km(lat, lon, store_lat, store_lon)
+        if closest_distance is None or distance < closest_distance:
+            closest_distance = distance
+            closest_store = store_id
+
+    return closest_store
+
+
+def _infer_store_from_address(address: Optional[Any]) -> Optional[str]:
+    # Heuristic: resolve city/state/pincode hints (or coordinates when present) to a known store.
+    if not address:
+        return None
+
+    if isinstance(address, str):
+        try:
+            parsed = json.loads(address)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            return _infer_store_from_address(parsed)
+
+        store = _match_store_by_city_name(address)
+        if store:
+            return store
+        return _match_store_by_pincode(address)
+
+    if isinstance(address, dict):
+        for key in ("store_id", "store", "preferred_store", "pickup_store", "fulfillment_store"):
+            store = _clean_store_identifier(address.get(key))
+            if store:
+                return store
+
+        store = _clean_store_identifier(address.get("location"))
+        if store:
+            return store
+
+        lat = _to_float(address.get("lat") or address.get("latitude"))
+        lon = _to_float(address.get("lng") or address.get("longitude") or address.get("lon"))
+        coord_store = _match_store_by_coordinates(lat, lon)
+        if coord_store:
+            return coord_store
+
+        for key in ("city", "town", "district", "region", "area", "locality", "village", "metro", "customer_city", "shipping_city"):
+            store = _match_store_by_city_name(address.get(key))
+            if store:
+                return store
+
+        for key in ("state", "state_name", "province", "state_code", "shipping_state"):
+            store = _match_store_by_state(address.get(key))
+            if store:
+                return store
+
+        for key in ("pincode", "postal_code", "zip", "zipcode", "post_code"):
+            store = _match_store_by_pincode(address.get(key))
+            if store:
+                return store
+
+        for value in address.values():
+            if isinstance(value, dict):
+                store = _infer_store_from_address(value)
+                if store:
+                    return store
+            elif isinstance(value, str):
+                store = _match_store_by_city_name(value)
+                if store:
+                    return store
+                store = _match_store_by_pincode(value)
+                if store:
+                    return store
+
+        return None
+
+    return None
+
+
+def _extract_store_from_metadata(metadata: Optional[Any]) -> Optional[str]:
+    if not metadata:
+        return None
+
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            return _match_store_by_city_name(metadata) or _match_store_by_pincode(metadata)
+
+    if not isinstance(metadata, dict):
+        return None
+
+    for key in ("store_id", "store", "location", "fulfillment_store", "pickup_store", "channel_store_id"):
+        store = _clean_store_identifier(metadata.get(key))
+        if store:
+            return store
+
+    for key in ("shipping_address", "delivery_address", "address", "customer_address", "billing_address"):
+        store = _infer_store_from_address(metadata.get(key))
+        if store:
+            return store
+
+    for key in ("shipping_city", "delivery_city", "customer_city", "city"):
+        store = _match_store_by_city_name(metadata.get(key))
+        if store:
+            return store
+
+    for key in ("address_city", "address_town", "address_area"):
+        store = _match_store_by_city_name(metadata.get(key))
+        if store:
+            return store
+
+    for key in ("shipping_state", "delivery_state", "state"):
+        store = _match_store_by_state(metadata.get(key))
+        if store:
+            return store
+
+    for key in ("address_state", "address_region", "address_province"):
+        store = _match_store_by_state(metadata.get(key))
+        if store:
+            return store
+
+    for key in ("shipping_pincode", "delivery_pincode", "pincode", "postal_code"):
+        store = _match_store_by_pincode(metadata.get(key))
+        if store:
+            return store
+
+    for key in ("address_pincode", "address_zip", "address_postal_code", "address_zipcode"):
+        store = _match_store_by_pincode(metadata.get(key))
+        if store:
+            return store
+
+    items = metadata.get("items")
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except json.JSONDecodeError:
+            items = []
+    if isinstance(items, list):
+        for raw in items:
+            if isinstance(raw, dict):
+                direct_store = _clean_store_identifier(raw.get("store_id") or raw.get("location"))
+                if direct_store:
+                    return direct_store
+                inferred_store = _infer_store_from_address(raw)
+                if inferred_store:
+                    return inferred_store
+
+    return _match_store_by_city_name(metadata) or _match_store_by_pincode(metadata)
 
 razorpay_client = None
 razorpay_router = APIRouter(prefix="/payment/razorpay", tags=["Razorpay"])
@@ -137,6 +485,281 @@ def _store_transaction_safely(transaction_id: str, data: Dict[str, str], user_ke
         })
     except RuntimeError:
         logger.debug("Redis not configured; skipped caching Razorpay payment")
+
+
+def _normalize_order_items(items: List[Dict[str, Any]], default_store: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Normalize raw cart items into a consistent structure."""
+    normalized: List[Dict[str, Any]] = []
+    fallback_store = _clean_store_identifier(default_store) or DEFAULT_STORE_ID
+
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+
+        normalized_item = dict(raw)
+
+        try:
+            qty_value = int(raw.get("qty") or raw.get("quantity") or raw.get("count") or 0)
+        except (TypeError, ValueError):
+            qty_value = 0
+        if qty_value <= 0:
+            qty_value = 1
+
+        price_source = raw.get("unit_price", raw.get("price"))
+        if price_source is None:
+            price_source = raw.get("line_total")
+            if price_source is not None:
+                try:
+                    price_source = float(price_source) / qty_value if qty_value else 0.0
+                except (TypeError, ValueError, ZeroDivisionError):
+                    price_source = 0.0
+
+        try:
+            unit_price = float(price_source)
+        except (TypeError, ValueError):
+            unit_price = 0.0
+
+        line_total_source = raw.get("line_total")
+        if line_total_source is None:
+            line_total_source = unit_price * qty_value
+        try:
+            line_total = float(line_total_source)
+        except (TypeError, ValueError):
+            line_total = unit_price * qty_value
+
+        location_hint = raw.get("location")
+        store_hint = raw.get("store_id") or raw.get("store") or raw.get("fulfillment_store") or raw.get("pickup_store")
+        store_from_location = _clean_store_identifier(location_hint)
+        store_id = (
+            _clean_store_identifier(store_hint)
+            or store_from_location
+            or fallback_store
+        )
+
+        if store_id == "ONLINE":
+            location = "online"
+        else:
+            location = f"store:{store_id}"
+
+        if store_from_location:
+            location = "online" if store_from_location == "ONLINE" else f"store:{store_from_location}"
+
+        sku_value = raw.get("sku") or raw.get("product_id")
+        sku = str(sku_value).strip() if sku_value is not None else None
+
+        normalized_item.update({
+            "sku": sku,
+            "qty": qty_value,
+            "quantity": qty_value,
+            "unit_price": round(unit_price, 2),
+            "line_total": round(line_total, 2),
+            "store_id": store_id,
+            "location": location,
+        })
+
+        normalized.append(normalized_item)
+
+    return normalized
+
+
+def _update_customer_records(
+    customer_id: Optional[str],
+    normalized_items: List[Dict[str, Any]],
+    payment_amount: float,
+    timestamp: str,
+    response_message: str,
+    order_id: Optional[str],
+) -> str:
+    if not customer_id:
+        return response_message
+    if not supabase_client.is_enabled() or not supabase_client.is_write_enabled():
+        return response_message
+
+    try:
+        customer = supabase_client.select_one('customers', f'customer_id=eq.{customer_id}')
+    except Exception as exc:
+        logger.warning(f"⚠️  Supabase customer lookup failed: {exc}")
+        return response_message
+
+    if not customer:
+        return response_message
+
+    purchase_history = customer.get('purchase_history') or []
+    if isinstance(purchase_history, str):
+        try:
+            purchase_history = json.loads(purchase_history)
+        except Exception:
+            purchase_history = []
+    if not isinstance(purchase_history, list):
+        purchase_history = []
+
+    for item in normalized_items:
+        purchase_history.append({
+            'order_id': order_id,
+            'sku': item.get('sku'),
+            'qty': item.get('qty'),
+            'unit_price': item.get('unit_price'),
+            'amount': item.get('line_total'),
+            'date': timestamp,
+        })
+
+    try:
+        previous_total = Decimal(str(customer.get('total_spend') or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        previous_total = Decimal("0")
+    try:
+        previous_items = int(customer.get('items_purchased') or 0)
+    except (TypeError, ValueError):
+        previous_items = 0
+    try:
+        previous_points = Decimal(str(customer.get('loyalty_points') or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        previous_points = Decimal("0")
+    old_tier = customer.get('loyalty_tier') or 'bronze'
+
+    try:
+        amount_decimal = Decimal(str(payment_amount))
+    except (InvalidOperation, TypeError, ValueError):
+        amount_decimal = Decimal("0")
+    earned_points = (amount_decimal * Decimal("0.02")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    loyalty_points = previous_points + earned_points
+    previous_points_int = int(previous_points.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    loyalty_points_int = int(loyalty_points.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    total_spend = (previous_total + amount_decimal).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    def _safe_qty(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    items_purchased = previous_items + sum(_safe_qty(item.get('qty')) for item in normalized_items)
+
+    tier = old_tier
+    if loyalty_points >= Decimal("1000"):
+        tier = 'gold'
+    elif loyalty_points >= Decimal("500"):
+        tier = 'silver'
+
+    try:
+        supabase_client.upsert('customers', {
+            'customer_id': customer_id,
+            'purchase_history': purchase_history,
+            'loyalty_points': loyalty_points_int,
+            'loyalty_tier': tier,
+            'total_spend': float(total_spend),
+            'items_purchased': items_purchased,
+        }, conflict_column='customer_id')
+    except Exception as exc:
+        logger.warning(f"⚠️  Failed to upsert customer metrics: {exc}")
+        return response_message
+
+    suffix = ""
+    earned_points_display = loyalty_points_int - previous_points_int
+    if earned_points_display > 0:
+        suffix += f" | Earned {earned_points_display} loyalty points!"
+    if tier != old_tier:
+        suffix += f" 🏆 Upgraded to {tier}!"
+
+    return response_message + suffix
+
+
+def _update_inventory(normalized_items: List[Dict[str, Any]], default_store: Optional[str] = None) -> None:
+    if not normalized_items:
+        return
+
+    fallback_store = _clean_store_identifier(default_store) or DEFAULT_STORE_ID
+    supabase_enabled = supabase_client.is_enabled() and supabase_client.is_write_enabled()
+    redis_client = getattr(redis_utils, "redis_client", None)
+
+    adjustments: Dict[tuple[str, str], int] = {}
+
+    for item in normalized_items:
+        if not isinstance(item, dict):
+            continue
+
+        sku_value = item.get("sku") or item.get("product_id")
+        sku = str(sku_value).strip() if sku_value else ""
+        if not sku:
+            continue
+
+        try:
+            qty_value = int(item.get("qty") or item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty_value = 0
+        if qty_value <= 0:
+            continue
+
+        store_id = None
+        for candidate in (
+            item.get("store_id"),
+            item.get("store"),
+            item.get("location"),
+            default_store,
+        ):
+            store_id = _clean_store_identifier(candidate)
+            if store_id:
+                break
+
+        store_id = store_id or fallback_store
+
+        key = (sku, store_id)
+        adjustments[key] = adjustments.get(key, 0) + qty_value
+
+    if not adjustments:
+        return
+
+    timestamp_now = datetime.now().isoformat()
+
+    for (sku, store_id), total_qty in adjustments.items():
+        if supabase_enabled:
+            try:
+                inventory = supabase_client.select_one(
+                    'inventory',
+                    f'sku=eq.{sku}&store_id=eq.{store_id}'
+                )
+            except Exception as exc:
+                logger.warning(f"⚠️  Supabase inventory lookup failed for {sku}/{store_id}: {exc}")
+                inventory = None
+
+            if inventory:
+                try:
+                    current_qty = int(inventory.get('quantity') or 0)
+                except (TypeError, ValueError):
+                    current_qty = 0
+                new_qty = max(0, current_qty - total_qty)
+
+                update_payload = {
+                    'quantity': new_qty,
+                }
+                if 'updated_at' in inventory:
+                    update_payload['updated_at'] = timestamp_now
+
+                try:
+                    supabase_client.update(
+                        'inventory',
+                        update_payload,
+                        f'sku=eq.{sku}&store_id=eq.{store_id}'
+                    )
+                except Exception as exc:
+                    logger.warning(f"⚠️  Failed to update inventory for {sku}/{store_id}: {exc}")
+            else:
+                logger.info(f"ℹ️  Inventory row missing for {sku}/{store_id}; skipped Supabase decrement")
+
+        if redis_client:
+            redis_location = 'online' if store_id == 'ONLINE' else store_id
+            try:
+                redis_key = redis_utils.get_stock_key(sku, redis_location)
+                current_stock_raw = redis_client.get(redis_key)
+                if current_stock_raw is None:
+                    continue
+                try:
+                    current_stock = int(current_stock_raw)
+                except (TypeError, ValueError):
+                    current_stock = 0
+                new_stock = max(0, current_stock - total_qty)
+                redis_client.set(redis_key, new_stock)
+            except Exception as exc:
+                logger.warning(f"⚠️  Failed to update Redis inventory for {sku}/{store_id}: {exc}")
 
 
 # ==========================================
@@ -290,6 +913,15 @@ async def create_razorpay_order(payload: RazorpayCreateOrderRequest):
 
     currency = (payload.currency or "INR").upper()
 
+    notes_dict = dict(payload.notes or {})
+
+    store_id_hint = _extract_store_from_metadata(notes_dict)
+    if not store_id_hint:
+        store_id_hint = _extract_store_from_metadata({"items": payload.items})
+
+    if store_id_hint and "store_id" not in notes_dict:
+        notes_dict["store_id"] = store_id_hint
+
     order_payload = {
         "amount": amount_paise,
         "currency": currency,
@@ -297,8 +929,8 @@ async def create_razorpay_order(payload: RazorpayCreateOrderRequest):
     }
     if payload.receipt:
         order_payload["receipt"] = payload.receipt
-    if payload.notes:
-        order_payload["notes"] = payload.notes
+    if notes_dict:
+        order_payload["notes"] = notes_dict
 
     # Generate or reuse canonical order ID for display and downstream flows
     if payload.receipt and orders_repository.is_valid_order_id(payload.receipt):
@@ -313,11 +945,13 @@ async def create_razorpay_order(payload: RazorpayCreateOrderRequest):
     if not payload.items:
         raise HTTPException(status_code=400, detail="items are required")
 
+    normalized_items = _normalize_order_items(payload.items, default_store=store_id_hint)
+
     orders_repository.upsert_order_record({
         "order_id": app_order_id,                 # EXISTS HERE
-        "customer_id": payload.notes.get("customer_id"),
+        "customer_id": notes_dict.get("customer_id"),
         "status": "created",                      # ORDER NOT PAID YET
-        "items": payload.items,                   # SOURCE OF TRUTH
+        "items": normalized_items,                   # SOURCE OF TRUTH
         "created_at": datetime.now().isoformat(),
     })
     return {
@@ -362,6 +996,8 @@ async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
 
     customer_id = _resolve_customer_id(payload.user_id, None)
 
+    response_message = "Payment captured successfully"
+
     if not payload.order_id:
         raise HTTPException(
             status_code=400,
@@ -382,30 +1018,31 @@ async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
     f"order_id=eq.{canonical_order_id}"
     )
 
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found in Supabase")
+
     logger.warning(f"🟡 ORDER FROM SUPABASE: {order}")
 
+    if not customer_id:
+        order_customer = order.get("customer_id") if isinstance(order, dict) else None
+        if order_customer:
+            customer_id = str(order_customer)
+
     items_payload = order.get("items", [])
+    if isinstance(items_payload, str):
+        try:
+            items_payload = json.loads(items_payload)
+        except json.JSONDecodeError:
+            items_payload = []
 
     if not items_payload:
         raise HTTPException(status_code=400, detail="Order items missing")
 
     logger.warning(f"🟢 ITEMS FROM ORDER: {items_payload}")
 
-
-    # Normalize items for DB
-    normalized_items = []
-    for item in items_payload:
-        qty = int(item.get("qty", 0))
-        unit_price = float(item.get("unit_price", 0))
-
-        normalized_items.append({
-            "sku": item.get("sku"),
-            "qty": qty,
-            "unit_price": unit_price,
-            "line_total": round(qty * unit_price, 2),
-        })
-
+    normalized_items = _normalize_order_items(items_payload)
     logger.warning(f"🟣 NORMALIZED ITEMS: {normalized_items}")
+    store_id_hint = normalized_items[0].get("store_id") if normalized_items else None
 
 
     # Idempotency for webhook
@@ -425,56 +1062,17 @@ async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
     except Exception as exc:
         logger.warning(f"⚠️  Failed to ensure order {canonical_order_id}: {exc}")
 
-    # Update customer purchase_history and inventory on payment success
+    # Update customer purchase history, metrics, and inventory on payment success
     try:
-        if customer_id:
-            try:
-                customer = supabase_client.select_one('customers', f'customer_id=eq.{customer_id}')
-            except Exception:
-                customer = None
-            if customer:
-                purchase_history = customer.get('purchase_history', [])
-                if purchase_history is None:
-                    purchase_history = []
-                elif isinstance(purchase_history, str):
-                    try:
-                        purchase_history = json.loads(purchase_history)
-                    except Exception:
-                        purchase_history = []
-                elif not isinstance(purchase_history, list):
-                    purchase_history = []
-                for item in normalized_items:
-                    purchase_history.append({
-                        'order_id': canonical_order_id,
-                        'sku': item['sku'],
-                        'qty': item['qty'],
-                        'unit_price': item['unit_price'],
-                        'amount': item['line_total'],
-                        'date': timestamp
-                    })
-                supabase_client.upsert('customers', {
-                    'customer_id': customer_id,
-                    'purchase_history': purchase_history
-                }, conflict_column='customer_id')
-        else:
-            logger.info(f"⚠️  No customer_id resolved for payment {payment_id}, skipping purchase_history update")
-
-        # Decrease inventory
-        store_id = 'STORE001'  # TODO: Find nearest store based on delivery address
-        for item in normalized_items:
-            sku = item['sku']
-            qty = item['qty']
-            try:
-                inventory = supabase_client.select_one('inventory', f'sku=eq.{sku}&store_id=eq.{store_id}')
-            except Exception:
-                inventory = None
-            if inventory:
-                current_qty = inventory['quantity']
-                new_qty = max(0, current_qty - qty)
-                supabase_client.update('inventory', {'quantity': new_qty}, f'sku=eq.{sku}&store_id=eq.{store_id}')
-            else:
-                logger.warning(f"⚠️  Inventory not found for sku {sku}, store {store_id}, skipping update")
-
+        response_message = _update_customer_records(
+            customer_id,
+            normalized_items,
+            float(amount_rupees),
+            timestamp,
+            response_message,
+            canonical_order_id,
+        )
+        _update_inventory(normalized_items, default_store=store_id_hint)
     except Exception as exc:
         logger.warning(f"⚠️  Failed to update customer/inventory for order {canonical_order_id}: {exc}")
 
@@ -579,10 +1177,12 @@ async def process_payment(request: PaymentRequest):
             "source": "process_payment",
             "original_order_reference": original_order_reference,
         }
-        if isinstance(request.metadata, dict) and request.metadata:
-            metadata_payload["request_metadata"] = request.metadata
+        metadata_dict = request.metadata if isinstance(request.metadata, dict) else {}
+        if metadata_dict:
+            metadata_payload["request_metadata"] = metadata_dict
         if customer_id:
             metadata_payload["customer_id"] = customer_id
+        store_id_hint = _extract_store_from_metadata(metadata_dict)
 
         transaction_data = {
             "transaction_id": payment_id,
@@ -597,8 +1197,6 @@ async def process_payment(request: PaymentRequest):
             "metadata": json.dumps(metadata_payload),
         }
         
-        redis_utils.store_transaction(payment_id, transaction_data)
-        
         # Step 6: Log payment attempt
         redis_utils.store_payment_attempt(request.user_id, {
             "transaction_id": payment_id,
@@ -612,9 +1210,23 @@ async def process_payment(request: PaymentRequest):
         response_message = f"{gateway_response['message']}. Cashback: ₹{cashback}"
         
         # Get items from metadata for updates
-        items_payload = []
-        if isinstance(request.metadata, dict):
-            items_payload = request.metadata.get('items', []) or []
+        items_payload: List[Dict[str, Any]] = []
+        items_payload = metadata_dict.get('items', []) or []
+        if isinstance(items_payload, str):
+            try:
+                items_payload = json.loads(items_payload)
+            except json.JSONDecodeError:
+                items_payload = []
+        if not store_id_hint:
+            store_id_hint = _extract_store_from_metadata({"items": items_payload})
+        normalized_items = _normalize_order_items(items_payload, default_store=store_id_hint)
+        if not store_id_hint and normalized_items:
+            store_id_hint = _clean_store_identifier(normalized_items[0].get("store_id"))
+        if store_id_hint:
+            metadata_payload["store_id"] = store_id_hint
+            transaction_data["metadata"] = json.dumps(metadata_payload)
+        
+        redis_utils.store_transaction(payment_id, transaction_data)
         
         # Register / update order to ensure Supabase FK integrity
         try:
@@ -625,7 +1237,7 @@ async def process_payment(request: PaymentRequest):
                 'status': 'paid',
                 'created_at': timestamp
             }
-            order_record['items'] = items_payload
+            order_record['items'] = normalized_items
 
             orders_repository.upsert_order_record(order_record)
             logger.info(f"✅ Order registered: {canonical_order_id} (payment: {payment_id})")
@@ -636,13 +1248,13 @@ async def process_payment(request: PaymentRequest):
         try:
             amount_decimal = Decimal(str(request.amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             try:
-                discount_source = request.metadata.get("discount_applied", 0)
+                discount_source = metadata_dict.get("discount_applied", 0)
                 discount_value = Decimal(str(discount_source))
             except (InvalidOperation, TypeError, ValueError):
                 discount_value = Decimal("0")
             discount_value = discount_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-            if "gst" in request.metadata:
+            if isinstance(request.metadata, dict) and "gst" in request.metadata:
                 try:
                     gst_source = request.metadata.get("gst", 0)
                     gst_value = Decimal(str(gst_source))
@@ -662,7 +1274,7 @@ async def process_payment(request: PaymentRequest):
                     "gst": _quantize(gst_value),
                     "method": request.payment_method,
                     "gateway_ref": gateway_response["gateway_txn_id"],
-                    "idempotency_key": request.metadata.get("idempotency_key", payment_id) if isinstance(request.metadata, dict) else payment_id,
+                    "idempotency_key": metadata_dict.get("idempotency_key", payment_id),
                     "created_at": timestamp,
                 }
             )
@@ -671,56 +1283,16 @@ async def process_payment(request: PaymentRequest):
         
         # Perform post-payment updates
         try:
-            # Update customer
-            customer = supabase_client.select_one('customer', f'customer_id=eq.{customer_id}')
-            if not customer:
-                raise Exception("Customer not found")
-            
-            purchase_history = customer.get('purchase_history', [])
-            old_tier = customer.get('loyalty_tier', 'bronze')
-            for item in normalized_items:
-                purchase_history.append({
-                    'order_id': canonical_order_id,
-                    'sku': item['sku'],
-                    'qty': item['qty'],
-                    'amount': item.get('line_total', item['qty'] * item['unit_price']),
-                    'date': timestamp,
-                    'rating': item.get('rating', 0)
-                })
+            response_message = _update_customer_records(
+                customer_id,
+                normalized_items,
+                request.amount,
+                timestamp,
+                response_message,
+                canonical_order_id,
+            )
+            _update_inventory(normalized_items, default_store=store_id_hint)
 
-            earned_points = request.amount * 0.02
-            loyalty_points = customer.get('loyalty_points', 0) + earned_points
-            tier = 'bronze'
-            if loyalty_points >= 1000:
-                tier = 'gold'
-            elif loyalty_points >= 500:
-                tier = 'silver'
-            
-            supabase_client.upsert('customer', {
-                'customer_id': customer_id,
-                'purchase_history': purchase_history,
-                'loyalty_points': loyalty_points,
-                'loyalty_tier': tier
-            }, conflict_column='customer_id')
-            
-            # Update inventory
-            store_id = 'STORE001'  # TODO: Find nearest store based on delivery address
-            for item in items_payload:
-                sku = item['sku']
-                qty = item['qty']
-                inventory = supabase_client.select_one('inventory', f'sku=eq.{sku}&store_id=eq.{store_id}')
-                if inventory:
-                    current_qty = inventory['quantity']
-                    new_qty = max(0, current_qty - qty)
-                    supabase_client.update('inventory', {'quantity': new_qty}, f'sku=eq.{sku}&store_id=eq.{store_id}')
-            
-            # Update response message
-            if earned_points > 0:
-                response_message += f" | Earned {earned_points} loyalty points!"
-            if tier != old_tier:
-                response_message += f" 🏆 Upgraded to {tier}!"
-            
-            # Finalize idempotency
             response_dict = {
                 "success": True,
                 "transaction_id": payment_id,
@@ -732,7 +1304,7 @@ async def process_payment(request: PaymentRequest):
                 "timestamp": timestamp,
                 "order_id": canonical_order_id
             }
-        
+
         except Exception as e:
             logger.error(f"Post-payment update failed: {e}")
             # Do not mark as completed

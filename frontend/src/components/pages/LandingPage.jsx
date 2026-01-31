@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import {
   Search,
@@ -9,12 +9,62 @@ import {
   Facebook,
   Twitter,
   Mail,
+  User,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import heroModel from "../../assets/model.png";
+import sessionStore from "../../lib/session";
 
 const LandingPage = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [customerProfile, setCustomerProfile] = useState(() => sessionStore.getProfile());
+  const [customerPhone, setCustomerPhone] = useState(() => sessionStore.getPhone());
+  const profileButtonRef = useRef(null);
+  const profileMenuRef = useRef(null);
+
+  useEffect(() => {
+    const syncProfile = () => {
+      setCustomerProfile(sessionStore.getProfile());
+      setCustomerPhone(sessionStore.getPhone());
+    };
+
+    syncProfile();
+
+    const handleStorage = (event) => {
+      if (!event.key || event.key.startsWith("ey_session_")) {
+        syncProfile();
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+
+    const handleClickAway = (event) => {
+      if (
+        profileButtonRef.current &&
+        profileMenuRef.current &&
+        !profileButtonRef.current.contains(event.target) &&
+        !profileMenuRef.current.contains(event.target)
+      ) {
+        setProfileMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickAway);
+    return () => document.removeEventListener("mousedown", handleClickAway);
+  }, [profileMenuOpen]);
+
+  const profile = customerProfile && Object.keys(customerProfile).length > 0 ? customerProfile : null;
+  const customerId = profile?.customer_id || profile?.customerId || "--";
+  const loyaltyTier = profile?.loyalty_tier || profile?.loyaltyTier || "Bronze";
+  const loyaltyPoints = profile?.loyalty_points || profile?.loyaltyPoints || "0";
+  const displayName = profile?.name || "Guest";
+  const displayCity = profile?.city || "";
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-orange-50 via-yellow-50 to-red-50 overflow-x-hidden scroll-smooth">
@@ -74,16 +124,66 @@ const LandingPage = () => {
             </div>
 
             {/* Right - Sign In and Cart */}
-            <div className="hidden md:flex items-center space-x-6">
-              <button className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider">
-                SIGN IN
-              </button>
-              <button className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors">
+            <div className="hidden md:flex items-center space-x-6 relative">
+              {profile ? (
+                <button
+                  ref={profileButtonRef}
+                  onClick={() => setProfileMenuOpen((open) => !open)}
+                  className="relative flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 hover:bg-white/15 text-yellow-100 transition-colors"
+                >
+                  <User className="w-5 h-5" />
+                  <span className="text-xs font-semibold tracking-wider">{displayName}</span>
+                </button>
+              ) : (
+                <Link
+                  to="/login"
+                  className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider"
+                >
+                  SIGN IN
+                </Link>
+              )}
+              <button className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors" aria-label="Shopping cart">
                 <ShoppingCart className="w-5 h-5" />
                 <span className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 text-red-700 text-xs rounded-full flex items-center justify-center">
                   0
                 </span>
               </button>
+
+              {profile && profileMenuOpen && (
+                <div
+                  ref={profileMenuRef}
+                  className="absolute right-0 top-14 w-72 bg-white text-red-900 rounded-2xl shadow-2xl border border-red-100/70 overflow-hidden z-50"
+                >
+                  <div className="bg-gradient-to-r from-red-700 to-orange-500 px-4 py-3 text-white">
+                    <p className="text-sm uppercase tracking-wide font-semibold">Account Overview</p>
+                    <p className="text-lg font-bold">{displayName}</p>
+                    <p className="text-xs text-orange-100/90">Customer ID: {customerId}</p>
+                  </div>
+                  <div className="px-4 py-3 space-y-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-red-800">Phone</span>
+                      <span className="text-red-600">{customerPhone || "--"}</span>
+                    </div>
+                    {displayCity && (
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-red-800">City</span>
+                        <span className="text-red-600">{displayCity}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-red-800">Loyalty Tier</span>
+                      <span className="text-orange-600 font-semibold">{loyaltyTier}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-red-800">Points</span>
+                      <span className="text-orange-600 font-semibold">{loyaltyPoints}</span>
+                    </div>
+                  </div>
+                  <div className="px-4 py-3 bg-red-50 text-xs text-red-700">
+                    Sessions are shared across WhatsApp, Kiosk, and more. Close the browser to sign out securely.
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Mobile Menu Button */}
@@ -154,9 +254,44 @@ const LandingPage = () => {
                 transition={{ delay: 0.3 }}
                 className="pt-4 border-t border-red-400"
               >
-                <button className="text-sm font-medium text-yellow-100 hover:text-yellow-200 transition-colors">
-                  SIGN IN
-                </button>
+                {profile ? (
+                  <div className="bg-white/10 rounded-2xl px-4 py-4 text-yellow-100 space-y-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
+                        <User className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold tracking-wide">{displayName}</p>
+                        <p className="text-[11px] uppercase tracking-widest text-yellow-200/80">Customer ID: {customerId}</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <p className="text-yellow-200/80">Phone</p>
+                        <p className="font-medium">{customerPhone || "--"}</p>
+                      </div>
+                      <div>
+                        <p className="text-yellow-200/80">City</p>
+                        <p className="font-medium">{displayCity || "--"}</p>
+                      </div>
+                      <div>
+                        <p className="text-yellow-200/80">Tier</p>
+                        <p className="font-medium">{loyaltyTier}</p>
+                      </div>
+                      <div>
+                        <p className="text-yellow-200/80">Points</p>
+                        <p className="font-medium">{loyaltyPoints}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <Link
+                    to="/login"
+                    className="block text-sm font-medium text-yellow-100 hover:text-yellow-200 transition-colors"
+                  >
+                    SIGN IN
+                  </Link>
+                )}
               </motion.div>
             </div>
           </motion.div>

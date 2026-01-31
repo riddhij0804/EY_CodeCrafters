@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Send, Check, CheckCheck, Phone, Video, Mic, MicOff, User, X, CreditCard, LifeBuoy } from 'lucide-react';
 import { createRazorpayOrder, verifyRazorpayPayment, getNextOrderId } from '../services/paymentService';
 import { getTierInfo } from '../services/loyaltyService';
@@ -102,11 +103,13 @@ const SUPPORT_TITLES = {
 };
 
 const Chat = () => {
+  const navigate = useNavigate();
+
   // Session state
   const [sessionInfo, setSessionInfo] = useState(null);
   const [sessionToken, setSessionToken] = useState(null);
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [showPhoneInput, setShowPhoneInput] = useState(true);
+  const [customerProfile, setCustomerProfile] = useState(() => sessionStore.getProfile());
+  const [isInitializing, setIsInitializing] = useState(true);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [loyaltyPoints, setLoyaltyPoints] = useState(0);
   const [loyaltyTier, setLoyaltyTier] = useState('Bronze');
@@ -162,6 +165,25 @@ const Chat = () => {
     }
   }, []);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const profile = sessionStore.getProfile();
+    const phone = sessionStore.getPhone();
+
+    if (!profile || !phone) {
+      setIsInitializing(false);
+      navigate('/login');
+      return;
+    }
+
+    setCustomerProfile(profile);
+    if (profile.customer_id || profile.customerId) {
+      setUserId(profile.customer_id || profile.customerId);
+    }
+
+    startOrRestoreSession();
+  }, [navigate]);
+
   // Helper to normalize surrounding quotes from messages so we only add one pair
   const normalizeQuotes = (text) => {
     if (!text) return '';
@@ -185,14 +207,22 @@ const Chat = () => {
   };
 
   // Session Management Functions
-  const startOrRestoreSession = async (phone) => {
+  const startOrRestoreSession = async () => {
     setIsLoadingSession(true);
     try {
-      const storedPhone = sessionStore.getPhone();
+      const phone = sessionStore.getPhone();
+      const profile = sessionStore.getProfile();
       const storedToken = sessionStore.getSessionToken();
 
-      if (storedPhone === phone && storedToken) {
-        // Try to restore existing session for this phone
+      if (!phone || !profile) {
+        sessionStore.clearAll();
+        navigate('/login');
+        return;
+      }
+
+      setCustomerProfile(profile);
+
+      if (storedToken) {
         try {
           const restoreResp = await fetch(`${SESSION_API}/session/restore`, {
             method: 'GET',
@@ -203,45 +233,45 @@ const Chat = () => {
             const restoreData = await restoreResp.json();
             setSessionToken(storedToken);
             setSessionInfo(restoreData.session);
-            setShowPhoneInput(false);
             sessionStore.setPhone(phone);
 
-            // Extract user_id and fetch loyalty points
-            const user_id = restoreData.session.customer_id || restoreData.session.data?.user_id || restoreData.session.user_id || '101';
-            setUserId(user_id);
-            await fetchLoyaltyPoints(user_id);
+            const resolvedUserId = restoreData.session.customer_id || restoreData.session.data?.user_id || restoreData.session.user_id || profile.customer_id;
+            if (resolvedUserId) {
+              setUserId(resolvedUserId);
+              await fetchLoyaltyPoints(resolvedUserId);
+            }
 
-            if (restoreData.session.data?.chat_context?.length > 0) {
-                      const chatMessages = restoreData.session.data.chat_context.map((msg, idx) => ({
-                        id: idx + 1,
-                        text: msg.message,
-                        sender: msg.sender === 'user' ? 'user' : 'agent',
-                        timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                        status: 'read',
-                        cards: msg.metadata?.cards || []
-                      }));
+            if (restoreData.session.data?.chat_context?.length) {
+              const chatMessages = restoreData.session.data.chat_context.map((msg, idx) => ({
+                id: idx + 1,
+                text: msg.message,
+                sender: msg.sender === 'user' ? 'user' : 'agent',
+                timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                status: 'read',
+                cards: msg.metadata?.cards || []
+              }));
               setMessages(chatMessages);
             }
-            setIsLoadingSession(false);
             return;
           }
         } catch (err) {
-          console.warn('Stored session restore failed, falling back to start', err);
+          console.warn('Stored session restore failed, attempting fresh session', err);
         }
-
       }
 
-      // Start new session for this phone
       const response = await fetch(`${SESSION_API}/session/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phone: phone,
-          channel: 'whatsapp'
+          phone,
+          channel: 'whatsapp',
+          customer_id: profile.customer_id || profile.customerId || undefined
         })
       });
 
-      if (!response.ok) throw new Error('Failed to start session');
+      if (!response.ok) {
+        throw new Error('Failed to start session');
+      }
 
       const data = await response.json();
 
@@ -249,25 +279,24 @@ const Chat = () => {
       sessionStore.setSessionToken(data.session_token);
       sessionStore.setPhone(phone);
       setSessionInfo(data.session);
-      setShowPhoneInput(false);
 
-      // Extract user_id and fetch loyalty points
-      const user_id = data.session.customer_id || data.session.data?.user_id || data.session.user_id || '101';
-      setUserId(user_id);
-      await fetchLoyaltyPoints(user_id);
+      const resolvedUserId = data.session.customer_id || data.session.data?.user_id || data.session.user_id || profile.customer_id;
+      if (resolvedUserId) {
+        setUserId(resolvedUserId);
+        await fetchLoyaltyPoints(resolvedUserId);
+      }
 
-      // Load chat history from session
       if (data.session.data.chat_context && data.session.data.chat_context.length > 0) {
         const chatMessages = data.session.data.chat_context.map((msg, idx) => ({
           id: idx + 1,
           text: msg.message,
           sender: msg.sender === 'user' ? 'user' : 'agent',
           timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-          status: 'read'
+          status: 'read',
+          cards: msg.metadata?.cards || []
         }));
         setMessages(chatMessages);
       } else {
-        // Initial greeting
         setMessages([{
           id: 1,
           text: "Hello! I'm your AI Sales Agent. How can I help you today?",
@@ -278,9 +307,12 @@ const Chat = () => {
       }
     } catch (error) {
       console.error('Session error:', error);
-      alert('Failed to start session. Please try again.');
+      sessionStore.clearAll();
+      alert('We could not create your session. Please log in again.');
+      navigate('/login');
     } finally {
       setIsLoadingSession(false);
+      setIsInitializing(false);
     }
   };
 
@@ -296,10 +328,11 @@ const Chat = () => {
       // Reset UI
       setSessionInfo(null);
       setSessionToken(null);
+      setCustomerProfile(null);
       sessionStore.clearAll();
       setMessages([]);
-      setShowPhoneInput(true);
-      setPhoneNumber('');
+      setIsInitializing(true);
+      navigate('/login');
     } catch (error) {
       console.error('End session error:', error);
     }
@@ -707,7 +740,7 @@ const Chat = () => {
       const shippingAddress = normalizedDetails.address || savedAddress;
       const notes = {
         session_id: sessionInfo?.session_id || '',
-        phone: sessionInfo?.phone || '',
+        phone: sessionInfo?.phone || customerProfile?.phone_number || '',
       };
 
       if (sessionInfo?.data?.customer_id) {
@@ -763,9 +796,9 @@ const Chat = () => {
         description: productDetails?.name ? `Order for ${productDetails.name}` : 'AI Sales Agent Order',
         order_id: orderResponse.order.id,
         prefill: {
-          name: sessionInfo?.data?.customer_name || sessionInfo?.phone || 'Customer',
+          name: sessionInfo?.data?.customer_name || customerProfile?.name || sessionInfo?.phone || 'Customer',
           email: sessionInfo?.data?.email || 'test@example.com',
-          contact: sessionInfo?.phone || '',
+          contact: sessionInfo?.phone || customerProfile?.phone_number || '',
         },
         theme: { color: '#008069' },
         modal: {
@@ -793,7 +826,7 @@ const Chat = () => {
               razorpay_order_id: response.razorpay_order_id,
               razorpay_signature: response.razorpay_signature,
               amount_rupees: parsedAmount,
-              user_id: sessionInfo?.data?.customer_id || sessionInfo?.phone,
+              user_id: sessionInfo?.data?.customer_id || sessionInfo?.customer_id || customerProfile?.customer_id || sessionInfo?.phone || customerProfile?.phone_number,
               method: 'razorpay',
               order_id: orderResponse.order_id,
             });
@@ -837,7 +870,7 @@ const Chat = () => {
             const recordedAddress = normalizedDetails.address || savedAddress || null;
 
             if (productDetails) {
-              const orderOwner = sessionInfo?.data?.customer_id || sessionInfo?.phone || '';
+              const orderOwner = sessionInfo?.data?.customer_id || sessionInfo?.customer_id || customerProfile?.customer_id || sessionInfo?.phone || customerProfile?.phone_number || '';
               const quantity = Number(productDetails.quantity) > 0 ? Number(productDetails.quantity) : 1;
               const unitPrice = Number(productDetails.price) || parsedAmount / quantity;
               const orderPayload = {
@@ -1181,7 +1214,7 @@ const Chat = () => {
       const payload = {
         message: messageText,
         session_token: sessionToken,
-        metadata: { user_id: sessionInfo?.customer_id || sessionInfo?.phone }
+        metadata: { user_id: sessionInfo?.customer_id || customerProfile?.customer_id || sessionInfo?.phone || customerProfile?.phone_number }
       };
 
       const resp = await fetch(`${SALES_API}/api/message`, {
@@ -1481,7 +1514,9 @@ const Chat = () => {
     setActiveSupportMode(mode);
 
     // Detailed initialization logic will run below
-    const baseUserId = sessionInfo?.data?.customer_id ? String(sessionInfo.data.customer_id) : (sessionInfo?.phone || '');
+    const baseUserId = sessionInfo?.data?.customer_id
+      ? String(sessionInfo.data.customer_id)
+      : (sessionInfo?.customer_id || customerProfile?.customer_id || sessionInfo?.phone || customerProfile?.phone_number || '');
     const defaults = {
       user_id: baseUserId,
       order_id: context.orderId || context.order_id || lastCompletedOrder?.orderId || '',
@@ -1563,45 +1598,14 @@ const Chat = () => {
     }
   };
 
-
-  // Phone Input Modal
-  if (showPhoneInput) {
+  if (isInitializing) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#efeae2]">
-        <div className="bg-white rounded-lg shadow-2xl p-8 max-w-md w-full mx-4">
-          <div className="text-center mb-6">
-            <div className="w-20 h-20 bg-[#25d366] rounded-full flex items-center justify-center mx-auto mb-4">
-              <Phone className="w-10 h-10 text-white" />
-            </div>
-            <h2 className="text-2xl font-bold text-[#008069] mb-2">WhatsApp Chat</h2>
-            <p className="text-gray-600">Enter your phone number to start or continue your session</p>
-          </div>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
-              <input
-                type="tel"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                placeholder="+91 98765 43210"
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-[#25d366] focus:outline-none text-lg"
-                onKeyPress={(e) => e.key === 'Enter' && !isLoadingSession && phoneNumber.trim() && startOrRestoreSession(phoneNumber)}
-              />
-            </div>
-            
-            <button
-              onClick={() => startOrRestoreSession(phoneNumber)}
-              disabled={isLoadingSession || !phoneNumber.trim()}
-              className="w-full bg-[#25d366] text-white py-3 rounded-lg font-semibold hover:bg-[#20bd5a] disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              {isLoadingSession ? 'Connecting...' : 'Start Chat'}
-            </button>
-            
-            <p className="text-xs text-gray-500 text-center">
-              Your session stays active and is reusable across WhatsApp and Kiosk.
-            </p>
-          </div>
+        <div className="bg-white/90 rounded-xl shadow-lg px-8 py-6 text-center">
+          <p className="text-lg font-semibold text-[#008069]">Preparing your session...</p>
+          <p className="text-sm text-gray-600 mt-2">
+            {isLoadingSession ? 'Connecting you with the AI agent.' : 'Verifying your login details.'}
+          </p>
         </div>
       </div>
     );

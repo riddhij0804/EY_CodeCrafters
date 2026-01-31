@@ -58,9 +58,22 @@ def seed_store_inventory():
         reader = csv.DictReader(f)
         
         for row in reader:
-            sku = row['sku']
-            store_id = row['store_id']
-            qty = int(row['qty'])
+            sku = row.get('sku')
+            store_id = row.get('store_id')
+            quantity_raw = (
+                row.get('qty')
+                or row.get('quantity')
+                or row.get('Quantity')
+                or row.get('QTY')
+            )
+
+            if not sku or not store_id:
+                continue
+
+            try:
+                qty = int(quantity_raw)
+            except (TypeError, ValueError):
+                qty = 0
             
             # Set store stock
             # IMPORTANT: Pass just "STORE_MUMBAI", not "store:STORE_MUMBAI"

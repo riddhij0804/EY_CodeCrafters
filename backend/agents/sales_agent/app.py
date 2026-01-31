@@ -196,7 +196,7 @@ async def handle_message(request: MessageRequest):
             sess_resp = requests.get(
                 "http://localhost:8000/session/restore",
                 headers={"X-Session-Token": request.session_token},
-                timeout=3
+                timeout=8
             )
             if sess_resp.status_code == 200:
                 sess = sess_resp.json().get("session", {})
@@ -206,6 +206,7 @@ async def handle_message(request: MessageRequest):
                 enhanced_metadata["phone"] = sess.get("phone")
                 enhanced_metadata["user_id"] = sess.get("user_id")
                 enhanced_metadata["session_id"] = sess.get("session_id")
+                enhanced_metadata["customer_id"] = sess.get("customer_id")
                 
                 logger.info(f"📚 Retrieved {len(conversation_history)} conversation turns")
                 logger.info(f"📞 Session phone: {sess.get('phone')}")
@@ -262,7 +263,7 @@ async def handle_message(request: MessageRequest):
                             "metadata": {"intent": result["intent"]}
                         }
                     },
-                    timeout=2
+                    timeout=6
                 )
 
                 requests.post(
@@ -280,7 +281,7 @@ async def handle_message(request: MessageRequest):
                             }
                         }
                     },
-                    timeout=2
+                    timeout=6
                 )
             except Exception as e:
                 logger.warning(f"⚠️  Could not save to session: {e}")

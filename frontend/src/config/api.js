@@ -8,6 +8,7 @@ export const API_ENDPOINTS = {
   SESSION_START: `${API_BASE_URL}:8000/session/start`,
   SESSION_END: `${API_BASE_URL}:8000/session/end`,
   SESSION_UPDATE: `${API_BASE_URL}:8000/session/update`,
+  SESSION_LOGIN: `${API_BASE_URL}:8000/session/login`,
   
   // Sales Agent with Orchestration (Port 8010)
   SALES_AGENT: `${API_BASE_URL}:8010`,

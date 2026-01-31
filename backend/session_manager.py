@@ -26,6 +26,9 @@ from pydantic import BaseModel, Field
 import uvicorn
 import pandas as pd
 
+from db.repositories.customers_repo import ensure_customer_record
+from customers_repository import ensure_customer as ensure_csv_customer
+
 # Configure a simple logger for this module
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -69,6 +72,9 @@ try:
         phone = str(row['phone_number'])
         customer_id = str(row['customer_id'])
         PHONE_TO_CUSTOMER[phone] = customer_id
+        digits_only = "".join(ch for ch in phone if ch.isdigit())
+        if digits_only:
+            PHONE_TO_CUSTOMER[digits_only] = customer_id
     logger.info(f"Loaded {len(PHONE_TO_CUSTOMER)} phone-to-customer mappings")
 except Exception as e:
     logger.error(f"Failed to load customers.csv: {e}")
@@ -118,6 +124,17 @@ class UpdateSessionResponse(BaseModel):
     """Response model returned after successfully updating a session."""
     session: Dict[str, Any]
 
+
+class LoginRequest(BaseModel):
+    """Request body for logging in customers via the web frontend."""
+    customer_id: Optional[str] = Field(default=None, description="Unique customer identifier if already known")
+    name: str = Field(..., description="Customer display name")
+    age: Optional[int] = Field(default=None, description="Age in years")
+    gender: Optional[str] = Field(default=None, description="Gender information")
+    phone_number: str = Field(..., description="Primary phone number")
+    city: Optional[str] = Field(default=None, description="City or locality")
+    channel: str = Field(default="web", description="Channel initiating the login")
+
 # -----------------------------
 # Helper functions
 # -----------------------------
@@ -128,6 +145,20 @@ def _now_iso() -> str:
     This helps keep timestamps consistent across session objects.
     """
     return datetime.utcnow().isoformat() + "Z"
+
+
+def _register_phone_mapping(phone: Optional[str], customer_id: Optional[str]) -> None:
+    """Store convenient lookups for phone -> customer id."""
+    if not phone or not customer_id:
+        return
+
+    phone_str = str(phone)
+    customer_str = str(customer_id)
+
+    PHONE_TO_CUSTOMER[phone_str] = customer_str
+    digits_only = "".join(ch for ch in phone_str if ch.isdigit())
+    if digits_only:
+        PHONE_TO_CUSTOMER[digits_only] = customer_str
 
 
 def generate_session_token() -> str:
@@ -142,7 +173,14 @@ def generate_session_token() -> str:
     return token
 
 
-def create_session(phone: Optional[str] = None, telegram_chat_id: Optional[str] = None, channel: str = "whatsapp", user_id: Optional[str] = None, customer_id: Optional[str] = None) -> (str, Dict[str, Any]):
+def create_session(
+    phone: Optional[str] = None,
+    telegram_chat_id: Optional[str] = None,
+    channel: str = "whatsapp",
+    user_id: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    customer_profile: Optional[Dict[str, Any]] = None,
+) -> (str, Dict[str, Any]):
     """Create a new session object and store it in the in-memory store.
 
     The session schema follows the user's requirements:
@@ -172,8 +210,6 @@ def create_session(phone: Optional[str] = None, telegram_chat_id: Optional[str] 
 
     # Determine the primary identifier for session lookup
     primary_id = phone or telegram_chat_id
-    is_telegram = telegram_chat_id is not None
-
     # Check for existing session based on the primary identifier
     existing_token = None
     if phone and phone in PHONE_SESSIONS:
@@ -192,6 +228,17 @@ def create_session(phone: Optional[str] = None, telegram_chat_id: Optional[str] 
             TELEGRAM_SESSIONS[telegram_chat_id] = existing_token
             if phone:
                 TELEGRAM_TO_PHONE[telegram_chat_id] = phone
+        if customer_profile:
+            existing_session["customer_profile"] = customer_profile
+            profile_customer_id = None
+            if isinstance(customer_profile, dict):
+                profile_customer_id = customer_profile.get("customer_id")
+            if profile_customer_id:
+                existing_session["customer_id"] = str(profile_customer_id)
+                if not existing_session.get("user_id"):
+                    existing_session["user_id"] = str(profile_customer_id)
+                if phone:
+                    _register_phone_mapping(phone, profile_customer_id)
         SESSIONS[existing_token] = existing_session
         logger.info(f"Restored session for {primary_id}, channel={channel}, session_id={existing_session['session_id']}")
         return existing_token, existing_session
@@ -208,21 +255,49 @@ def create_session(phone: Optional[str] = None, telegram_chat_id: Optional[str] 
     else:
         session_id = str(uuid.uuid4())
 
+    if customer_profile and not customer_id:
+        profile_customer_id = None
+        if isinstance(customer_profile, dict):
+            profile_customer_id = customer_profile.get("customer_id")
+        if profile_customer_id:
+            customer_id = str(profile_customer_id)
+
     # Map to customer_id from CSV (only if phone is provided and customer_id not provided)
     if not customer_id and phone:
         customer_id = PHONE_TO_CUSTOMER.get(phone)
+        if not customer_id:
+            digits_only = "".join(ch for ch in str(phone) if ch.isdigit())
+            if digits_only:
+                customer_id = PHONE_TO_CUSTOMER.get(digits_only)
+
         if customer_id:
             logger.info(f"Mapped phone {phone} to customer_id {customer_id}")
+            _register_phone_mapping(phone, customer_id)
         else:
-            logger.warning(f"Phone {phone} not found in customers.csv")
+            logger.warning(f"Phone {phone} not found in customers.csv; ensuring Supabase record")
+            try:
+                ensured = ensure_customer_record(phone)
+            except Exception as exc:
+                logger.warning(f"Failed to ensure Supabase customer for phone {phone}: {exc}")
+                ensured = None
+
+            if ensured:
+                ensured_id = ensured.get("customer_id")
+                customer_id = str(ensured_id) if ensured_id is not None else None
+                if customer_id:
+                    ensured_phone = str(ensured.get("phone_number") or phone)
+                    _register_phone_mapping(ensured_phone, customer_id)
+                    _register_phone_mapping(phone, customer_id)
+                    logger.info(f"Created Supabase customer {customer_id} for phone {ensured_phone}")
     
     # Build the session payload with the required structure
+    resolved_user_id = user_id or customer_id
     session = {
         "session_id": session_id,  # persistent id for the phone (or unique for Telegram-only)
         "phone": phone,  # primary identifier (can be None)
         "telegram_chat_id": telegram_chat_id,  # Telegram chat ID (can be None)
         "channel": channel,  # current channel
-        "user_id": user_id,  # can be None
+        "user_id": resolved_user_id,  # can be None
         "customer_id": customer_id,  # mapped from customers.csv (can be None)
         "data": {
             "cart": [],  # list of cart items
@@ -235,12 +310,17 @@ def create_session(phone: Optional[str] = None, telegram_chat_id: Optional[str] 
         "is_active": True,  # session status
     }
 
+    if customer_profile:
+        session["customer_profile"] = customer_profile
+
     # Store session in the global in-memory dict
     SESSIONS[token] = session
 
     # Update mappings
     if phone:
         PHONE_SESSIONS[phone] = token
+        if customer_id:
+            _register_phone_mapping(phone, customer_id)
     if telegram_chat_id:
         TELEGRAM_SESSIONS[telegram_chat_id] = token
         if phone:
@@ -408,6 +488,73 @@ def _dedupe_chat_context(session: Dict[str, Any]) -> None:
 # -----------------------------
 # API Endpoints
 # -----------------------------
+
+@app.post("/session/login")
+async def session_login(request: LoginRequest):
+    """Create or update a customer record and return an active session."""
+    customer_id = (request.customer_id or "").strip() or None
+
+    phone = (request.phone_number or "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone_number is required")
+
+    name = (request.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    customer_payload = {
+        "name": name,
+        "age": request.age if request.age is not None else "",
+        "gender": (request.gender or "").strip(),
+        "phone_number": phone,
+        "city": (request.city or "").strip(),
+    }
+
+    if customer_id:
+        customer_payload["customer_id"] = customer_id
+
+    try:
+        customer_record = ensure_csv_customer(customer_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to persist customer record")
+        raise HTTPException(status_code=500, detail="Unable to save customer") from exc
+
+    stored_phone = customer_record.get("phone_number") or phone
+    stored_customer_id = customer_record.get("customer_id") or customer_id
+
+    _register_phone_mapping(stored_phone, stored_customer_id)
+
+    try:
+        attributes = {
+            "age": int(customer_record.get("age")) if customer_record.get("age") else None,
+            "gender": customer_record.get("gender") or None,
+            "city": customer_record.get("city") or None,
+        }
+        ensure_customer_record(stored_phone, name=customer_record.get("name"), attributes=attributes)
+    except Exception as exc:
+        logger.debug("Supabase ensure_customer_record skipped: %s", exc)
+
+    token, session = create_session(
+        phone=stored_phone,
+        channel=request.channel or "web",
+        user_id=str(stored_customer_id),
+        customer_id=str(stored_customer_id),
+        customer_profile=customer_record,
+    )
+
+    try:
+        _dedupe_chat_context(session)
+    except Exception:
+        logger.debug("Failed to dedupe chat context on login", exc_info=True)
+
+    return JSONResponse(status_code=200, content={
+        "session_token": token,
+        "session": session,
+        "customer": customer_record,
+    })
+
 
 @app.post("/session/start", response_model=StartSessionResponse)
 async def session_start(request: StartSessionRequest):

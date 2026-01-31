@@ -1,18 +1,24 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Mic, MicOff, Package, MapPin, User, ShoppingBag, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Send, Mic, MicOff, Package, MapPin, User, ShoppingBag, X, Award } from 'lucide-react';
 import API_ENDPOINTS from '../config/api';
+import { getTierInfo } from '../services/loyaltyService';
 import sessionStore from '../lib/session';
 
 const SESSION_API = API_ENDPOINTS.SESSION_MANAGER;
 const SALES_API = API_ENDPOINTS.SALES_AGENT;
 
 const KioskChat = () => {
+  const navigate = useNavigate();
+
   // Session state
   const [sessionInfo, setSessionInfo] = useState(null);
   const [sessionToken, setSessionToken] = useState(null);
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [showPhoneInput, setShowPhoneInput] = useState(true);
+  const [customerProfile, setCustomerProfile] = useState(() => sessionStore.getProfile());
+  const [isInitializing, setIsInitializing] = useState(true);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
+  const [loyaltyPoints, setLoyaltyPoints] = useState(0);
+  const [loyaltyTier, setLoyaltyTier] = useState('Bronze');
 
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -38,6 +44,25 @@ const KioskChat = () => {
       if (s.has(id)) s.delete(id); else s.add(id);
       return s;
     });
+  };
+
+  const fetchLoyaltyDetails = async (userId) => {
+    if (!userId) {
+      setLoyaltyPoints(0);
+      setLoyaltyTier('Bronze');
+      return;
+    }
+
+    try {
+      const result = await getTierInfo(userId);
+      const points = Number(result?.points);
+      setLoyaltyPoints(Number.isFinite(points) ? points : 0);
+      setLoyaltyTier(result?.tier || 'Bronze');
+    } catch (error) {
+      console.error('Failed to fetch loyalty info:', error);
+      setLoyaltyPoints(0);
+      setLoyaltyTier('Bronze');
+    }
   };
 
   // Featured product visibility
@@ -131,97 +156,137 @@ const KioskChat = () => {
   };
 
   // Session Management Functions
-  const startOrRestoreSession = async (phone) => {
+  const startOrRestoreSession = async () => {
     setIsLoadingSession(true);
     try {
-      // Attempt to reuse stored token first, but only if it belongs to the same phone.
+      const phone = sessionStore.getPhone();
+      const profile = sessionStore.getProfile();
       const storedToken = sessionStore.getSessionToken();
-      const storedPhone = sessionStore.getPhone();
-      if (storedToken && storedPhone && phone && storedPhone === phone) {
-        const restoreResp = await fetch(`${SESSION_API}/session/restore`, {
-          method: 'GET',
-          headers: { 'X-Session-Token': storedToken }
-        });
 
-        if (restoreResp.ok) {
-          const restoreData = await restoreResp.json();
-          setSessionToken(storedToken);
-          setSessionInfo(restoreData.session);
-          setShowPhoneInput(false);
-          sessionStore.setPhone(phone);
-          // load history if present
-          if (restoreData.session.data?.chat_context?.length) {
-            const chatMessages = restoreData.session.data.chat_context.map((msg, idx) => ({
-              id: idx + 1,
-              text: msg.message,
-              sender: msg.sender === 'user' ? 'user' : 'agent',
-              timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', { 
-                hour: '2-digit', 
-                minute: '2-digit',
-                hour12: true 
-              }),
-              cards: msg.metadata?.cards || []
-            }));
-            setMessages(chatMessages);
-          }
-          setIsLoadingSession(false);
-          return;
-        }
+      if (!phone || !profile) {
+        sessionStore.clearAll();
+        navigate('/login');
+        return;
       }
 
-      if (storedToken && (!storedPhone || storedPhone !== phone)) {
-        sessionStore.clearAll();
+      setCustomerProfile(profile);
+
+      const applyServerProfile = (serverProfile) => {
+        if (!serverProfile || typeof serverProfile !== 'object') {
+          return;
+        }
+        setCustomerProfile(serverProfile);
+        sessionStore.setProfile(serverProfile);
+      };
+
+      const resolveUserId = (session, fallbackProfile) => (
+        session?.customer_id
+        || session?.data?.user_id
+        || session?.user_id
+        || session?.data?.customer_profile?.customer_id
+        || session?.data?.customer_profile?.customerId
+        || fallbackProfile?.customer_id
+        || fallbackProfile?.customerId
+        || null
+      );
+
+      if (storedToken) {
+        try {
+          const restoreResp = await fetch(`${SESSION_API}/session/restore`, {
+            method: 'GET',
+            headers: { 'X-Session-Token': storedToken }
+          });
+
+          if (restoreResp.ok) {
+            const restoreData = await restoreResp.json();
+            setSessionToken(storedToken);
+            setSessionInfo(restoreData.session);
+            sessionStore.setPhone(phone);
+
+            applyServerProfile(restoreData.session?.data?.customer_profile);
+
+            const userId = resolveUserId(restoreData.session, profile);
+            await fetchLoyaltyDetails(userId);
+
+            if (restoreData.session.data?.chat_context?.length) {
+              const chatMessages = restoreData.session.data.chat_context.map((msg, idx) => ({
+                id: idx + 1,
+                text: msg.message,
+                sender: msg.sender === 'user' ? 'user' : 'agent',
+                timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: true,
+                }),
+                cards: msg.metadata?.cards || [],
+              }));
+              setMessages(chatMessages);
+            }
+            return;
+          }
+        } catch (err) {
+          console.warn('Stored session restore failed, attempting fresh session', err);
+        }
       }
 
       const response = await fetch(`${SESSION_API}/session/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phone: phone,
-          channel: 'kiosk'
+          phone,
+          channel: 'kiosk',
+          customer_id: profile.customer_id || profile.customerId || undefined,
         })
       });
 
-      if (!response.ok) throw new Error('Failed to start session');
+      if (!response.ok) {
+        throw new Error('Failed to start session');
+      }
 
       const data = await response.json();
       setSessionToken(data.session_token);
       sessionStore.setSessionToken(data.session_token);
       sessionStore.setPhone(phone);
       setSessionInfo(data.session);
-      setShowPhoneInput(false);
 
-      // Load chat history from session
+      applyServerProfile(data.session?.data?.customer_profile);
+
+      const userId = resolveUserId(data.session, profile);
+      await fetchLoyaltyDetails(userId);
+
       if (data.session.data.chat_context && data.session.data.chat_context.length > 0) {
         const chatMessages = data.session.data.chat_context.map((msg, idx) => ({
           id: idx + 1,
           text: msg.message,
           sender: msg.sender === 'user' ? 'user' : 'agent',
-          timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', { 
-            hour: '2-digit', 
+          timestamp: new Date(msg.timestamp).toLocaleTimeString('en-US', {
+            hour: '2-digit',
             minute: '2-digit',
-            hour12: true 
-          })
+            hour12: true,
+          }),
+          cards: msg.metadata?.cards || [],
         }));
         setMessages(chatMessages);
       } else {
-        // Initial greeting
         setMessages([{
           id: 1,
           text: "Welcome to Aditya Birla Fashion & Retail! I'm your in-store digital assistant. How may I help you today?",
           sender: 'agent',
-          timestamp: new Date().toLocaleTimeString('en-US', { 
-            hour: '2-digit', 
+          timestamp: new Date().toLocaleTimeString('en-US', {
+            hour: '2-digit',
             minute: '2-digit',
-            hour12: true 
-          })
+            hour12: true,
+          }),
         }]);
       }
     } catch (error) {
       console.error('Session error:', error);
-      alert('Failed to start session. Please try again.');
+      sessionStore.clearAll();
+      alert('We could not create your session. Please log in again.');
+      navigate('/login');
     } finally {
       setIsLoadingSession(false);
+      setIsInitializing(false);
     }
   };
 
@@ -237,10 +302,13 @@ const KioskChat = () => {
       // Reset UI
       setSessionInfo(null);
       setSessionToken(null);
+      setCustomerProfile(null);
+      setLoyaltyPoints(0);
+      setLoyaltyTier('Bronze');
       sessionStore.clearAll();
       setMessages([]);
-      setShowPhoneInput(true);
-      setPhoneNumber('');
+      setIsInitializing(true);
+      navigate('/login');
     } catch (error) {
       console.error('End session error:', error);
     }
@@ -277,6 +345,21 @@ const KioskChat = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, isTyping]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const profile = sessionStore.getProfile();
+    const phone = sessionStore.getPhone();
+
+    if (!profile || !phone) {
+      setIsInitializing(false);
+      navigate('/login');
+      return;
+    }
+
+    setCustomerProfile(profile);
+    startOrRestoreSession();
+  }, [navigate]);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -442,47 +525,27 @@ const KioskChat = () => {
     setInputText(message);
   };
 
-  // Phone Input Screen
-  if (showPhoneInput) {
+  // Previous phone input UI removed in favor of login-first flow
+
+  const activeProfile = customerProfile || sessionInfo?.data?.customer_profile || null;
+  const displayName = activeProfile?.name?.trim() || 'Guest';
+  const firstName = activeProfile?.name ? displayName.split(' ')[0] || displayName : 'Guest';
+  const displayCity = activeProfile?.city?.trim() || '';
+  const normalizedPoints = Number.isFinite(loyaltyPoints) ? loyaltyPoints : Number(loyaltyPoints) || 0;
+  const loyaltyTierLabel = loyaltyTier || 'Bronze';
+  const loyaltyPointsLabel = new Intl.NumberFormat('en-IN').format(Math.max(0, Math.round(normalizedPoints)));
+
+  if (isInitializing) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-        <div className="bg-white rounded-2xl shadow-2xl p-10 max-w-lg w-full mx-4 border-2 border-[#8B1538]">
-          <div className="text-center mb-8">
-            <div className="w-24 h-24 bg-gradient-to-br from-[#8B1538] to-[#A91D3A] rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
-              <ShoppingBag className="w-12 h-12 text-white" />
-            </div>
-            <h2 className="text-3xl font-bold text-[#8B1538] mb-2">In-Store Kiosk</h2>
-            <p className="text-gray-600">Aditya Birla Fashion & Retail</p>
-            <p className="text-sm text-gray-500 mt-2">Enter your phone number to access your session</p>
+      <div className="min-h-screen bg-gradient-to-br from-[#f9e6d3] via-[#fbe9e7] to-[#f1f8e9] flex items-center justify-center">
+        <div className="bg-white shadow-2xl rounded-3xl p-10 max-w-lg w-full border border-[#ffe0b2] text-center">
+          <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-gradient-to-r from-[#bf360c] to-[#f57c00] text-white shadow-xl">
+            <ShoppingBag className="w-12 h-12" />
           </div>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">Phone Number</label>
-              <input
-                type="tel"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                placeholder="+91 98765 43210"
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-[#8B1538] focus:outline-none text-lg"
-                onKeyPress={(e) => e.key === 'Enter' && !isLoadingSession && phoneNumber.trim() && startOrRestoreSession(phoneNumber)}
-              />
-            </div>
-            
-            <button
-              onClick={() => startOrRestoreSession(phoneNumber)}
-              disabled={isLoadingSession || !phoneNumber.trim()}
-              className="w-full bg-gradient-to-r from-[#8B1538] to-[#A91D3A] text-white py-3 rounded-lg font-semibold hover:from-[#6d1028] hover:to-[#8B1538] disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-md"
-            >
-              {isLoadingSession ? 'Connecting...' : 'Access Kiosk'}
-            </button>
-            
-            <div className="bg-blue-50 border-l-4 border-blue-500 p-3 rounded">
-              <p className="text-xs text-blue-800">
-                <strong>Session Continuity:</strong> Your conversation continues from WhatsApp. Session stays active and reusable.
-              </p>
-            </div>
-          </div>
+          <h2 className="mt-6 text-3xl font-bold text-[#4e342e]">Preparing kiosk session...</h2>
+          <p className="mt-3 text-sm text-[#6d4c41]">
+            {isLoadingSession ? 'Linking your profile across channels.' : 'Verifying your login details.'}
+          </p>
         </div>
       </div>
     );
@@ -504,6 +567,9 @@ const KioskChat = () => {
               <div>
                 <h1 className="text-2xl font-bold tracking-wide">Aditya Birla Fashion & Retail</h1>
                 <p className="text-sm text-gray-200 font-light">In-Store Digital Assistant</p>
+                {activeProfile?.name && (
+                  <p className="text-xs text-[#fef3c7] mt-1">Welcome back, {firstName}!</p>
+                )}
               </div>
             </div>
           </div>
@@ -540,9 +606,25 @@ const KioskChat = () => {
               </div>
             </div>
             <div className="flex items-center gap-6 text-sm">
-              <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg shadow-sm">
+              <div className="flex items-center gap-3 bg-white px-3 py-2 rounded-lg shadow-sm">
                 <User className="w-4 h-4 text-[#1e40af]" />
-                <span className="font-semibold text-[#1e40af]">{sessionInfo.phone}</span>
+                <div className="leading-tight">
+                  <span className="font-semibold text-[#1e40af] block">{displayName}</span>
+                  {(sessionInfo.phone || displayCity) && (
+                    <span className="text-[11px] text-[#475569]">
+                      {sessionInfo.phone}
+                      {sessionInfo.phone && displayCity ? ' • ' : ''}
+                      {displayCity}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg shadow-sm border border-[#facc15]/40">
+                <Award className="w-4 h-4 text-[#b45309]" />
+                <div className="leading-tight">
+                  <span className="font-semibold text-[#92400e] block">{loyaltyTierLabel} Member</span>
+                  <span className="text-[11px] text-[#b45309]">{loyaltyPointsLabel} pts balance</span>
+                </div>
               </div>
               <div className="px-3 py-2 bg-gradient-to-r from-[#8B1538] to-[#A91D3A] text-white rounded-lg shadow-sm">
                 <span className="font-semibold">🏬 In-Store Kiosk</span>

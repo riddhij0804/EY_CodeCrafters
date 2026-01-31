@@ -83,6 +83,8 @@ WORKER_SERVICES = {
     "virtual_circles": "http://localhost:8009",  # Virtual Circles (Community Chat)
 }
 
+WORKER_TIMEOUT_SECONDS = int(os.getenv("SALES_AGENT_WORKER_TIMEOUT", "25"))
+
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -562,7 +564,7 @@ async def call_recommendation_worker(state: SalesAgentState) -> SalesAgentState:
     
     try:
         # Extract customer_id dynamically from phone number or metadata
-        customer_id = state["metadata"].get("user_id")
+        customer_id = state["metadata"].get("customer_id") or state["metadata"].get("user_id")
         
         # If no user_id, try to resolve from phone number in session
         if not customer_id:
@@ -608,9 +610,10 @@ async def call_recommendation_worker(state: SalesAgentState) -> SalesAgentState:
         
         # Debug logging
         logger.info(f"🔍 Recommendation payload: {payload}")
+        logger.info(f"⏳ Recommendation worker timeout: {WORKER_TIMEOUT_SECONDS}s")
         
         # Call microservice
-        response = requests.post(endpoint, json=payload, timeout=10)
+        response = requests.post(endpoint, json=payload, timeout=WORKER_TIMEOUT_SECONDS)
         response.raise_for_status()
         
         data = response.json()
@@ -717,7 +720,11 @@ async def call_payment_worker(state: SalesAgentState) -> SalesAgentState:
         entities = state.get("entities", {})
         metadata = state.get("metadata", {})
         
-        customer_id = entities.get("customer_id") or metadata.get("user_id") or metadata.get("customer_id")
+        customer_id = (
+            entities.get("customer_id")
+            or metadata.get("customer_id")
+            or metadata.get("user_id")
+        )
         items = entities.get("items") or metadata.get("cart_items", [])
         payment_method = entities.get("payment_method") or metadata.get("payment_method")
         shipping_address = entities.get("shipping_address") or metadata.get("shipping_address")
@@ -820,7 +827,7 @@ async def call_loyalty_worker(state: SalesAgentState) -> SalesAgentState:
             logger.info(f"✅ Resolved phone {phone} to customer_id {customer_id}")
         
         if not customer_id:
-            customer_id = state.get("metadata", {}).get("user_id", "101")  # Default fallback
+            customer_id = state.get("metadata", {}).get("customer_id") or state.get("metadata", {}).get("user_id", "101")
             logger.warning(f"⚠️  Using fallback customer_id: {customer_id}")
         
         # Get user's complete tier information (points + tier + benefits)
@@ -1030,7 +1037,7 @@ async def call_virtual_circles_worker(state: SalesAgentState) -> SalesAgentState
             logger.info(f"✅ Resolved phone {phone} to customer_id {customer_id}")
         
         if not customer_id:
-            customer_id = state.get("metadata", {}).get("user_id", "101")  # Default fallback
+            customer_id = state.get("metadata", {}).get("customer_id") or state.get("metadata", {}).get("user_id", "101")
             logger.warning(f"⚠️  Using fallback customer_id: {customer_id}")
         
         # Assign user to circle (if not already assigned)

@@ -2,6 +2,7 @@
 const SESSION_TOKEN_KEY = 'ey_session_token';
 const SESSION_PHONE_KEY = 'ey_session_phone';
 const SESSION_ADDRESS_KEY = 'ey_checkout_address';
+const SESSION_PROFILE_KEY = 'ey_session_profile';
 
 export function getSessionToken() {
   try { return localStorage.getItem(SESSION_TOKEN_KEY); } catch { return null; }
@@ -27,9 +28,40 @@ export function clearPhone() {
   try { localStorage.removeItem(SESSION_PHONE_KEY); } catch {}
 }
 
+export function getProfile() {
+  try {
+    const raw = localStorage.getItem(SESSION_PROFILE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function setProfile(profile) {
+  try {
+    if (!profile) {
+      localStorage.removeItem(SESSION_PROFILE_KEY);
+      return;
+    }
+    localStorage.setItem(SESSION_PROFILE_KEY, JSON.stringify(profile));
+  } catch {}
+}
+
+export function clearProfile() {
+  try { localStorage.removeItem(SESSION_PROFILE_KEY); } catch {}
+}
+
+export function getCustomerId() {
+  const profile = getProfile();
+  if (!profile) return null;
+  return profile.customer_id || profile.customerId || null;
+}
+
 export function clearAll() {
   clearSessionToken();
   clearPhone();
+  clearProfile();
   clearAddress();
 }
 
@@ -64,6 +96,10 @@ export default {
   getPhone,
   setPhone,
   clearPhone,
+  getProfile,
+  setProfile,
+  clearProfile,
+  getCustomerId,
   getAddress,
   setAddress,
   clearAddress,
