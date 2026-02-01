@@ -45,4 +45,4 @@ apscheduler
 # --- HTTP Client ---
 httpx
 
-python-multipart
+python-multipartgoogle-genai==1.61.0
