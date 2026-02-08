@@ -513,19 +513,12 @@ const Chat = () => {
             return;
           }
 
-          const images = Array.isArray(supportForm.images)
-            ? supportForm.images
-            : (supportForm.images
-              ? supportForm.images.split(',').map((img) => img.trim()).filter(Boolean)
-              : []);
-
           result = await initiateReturn({
             user_id: supportForm.user_id,
             order_id: supportForm.order_id,
             product_sku: supportForm.product_sku,
             reason_code: supportForm.reason_code,
             additional_comments: supportForm.additional_comments || '',
-            images,
           });
 
           summaryText = `📦 Return ${result.return_id} created for order ${supportForm.order_id}. Pickup ${result.pickup_date || 'will be scheduled soon'} and refund will trigger after inspection.`;
@@ -1466,7 +1459,7 @@ const Chat = () => {
       name: card.name || 'Selected product',
       price: normalizedPrice,
       rawPrice: card.price,
-      image: card.image || '',
+      // image field removed
       brand: card.brand || '',
       category: card.category || extractCardAttribute(card, 'category') || '',
       color: extractCardAttribute(card, 'color') || card.color || '',
@@ -1793,14 +1786,7 @@ const Chat = () => {
                   {message.cards.map((card, idx) => (
                     <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors">
                       <div className="flex gap-3">
-                        {card.image && (
-                          <img 
-                            src={card.image} 
-                            alt={card.name} 
-                            className="w-16 h-16 object-cover rounded"
-                            onError={(e) => e.target.style.display = 'none'}
-                          />
-                        )}
+                        {/* image display removed */}
                         <div className="flex-1">
                           <h4 className="font-semibold text-sm text-gray-900">{card.name}</h4>
                           <p className="text-xs text-gray-600 mt-1">{card.sku}</p>
@@ -2264,15 +2250,7 @@ const Chat = () => {
                           placeholder="Share any details for the pickup team"
                         />
                       </label>
-                      <label className="block text-xs font-medium text-gray-600 uppercase">Image URLs (optional)
-                        <textarea
-                          value={supportForm.images || ''}
-                          onChange={(e) => updateSupportForm('images', e.target.value)}
-                          className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none"
-                          rows={2}
-                          placeholder="Comma separated URLs"
-                        />
-                      </label>
+                      {/* Image URLs input removed */}
                     </div>
                   )}
 

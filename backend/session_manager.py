@@ -26,8 +26,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 import pandas as pd
 
-from db.repositories.customers_repo import ensure_customer_record
-from customers_repository import ensure_customer as ensure_csv_customer
+from db.repositories.customer_repo import ensure_customer, ensure_customer_record
 
 # Configure a simple logger for this module
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -159,6 +158,59 @@ def _register_phone_mapping(phone: Optional[str], customer_id: Optional[str]) ->
     digits_only = "".join(ch for ch in phone_str if ch.isdigit())
     if digits_only:
         PHONE_TO_CUSTOMER[digits_only] = customer_str
+
+
+def _sanitize_shipping_address(raw: Any) -> Dict[str, str]:
+    """Normalize shipping address payloads coming from chat metadata."""
+    if not isinstance(raw, dict):
+        return {}
+
+    cleaned: Dict[str, str] = {}
+    for key in ("city", "landmark", "building", "building_name"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        normalized_key = "building" if key in {"building", "building_name"} else key
+        if normalized_key == "building" and "building" in cleaned:
+            continue
+        cleaned[normalized_key] = text
+    return cleaned
+
+
+def _sync_shipping_address(session: Dict[str, Any], address: Dict[str, str]) -> None:
+    """Persist the latest shipping address to Supabase for the active customer."""
+    if not address:
+        return
+
+    logger.info("Syncing shipping address to Supabase: %s", address)
+
+    phone = session.get("phone") or session.get("customer_profile", {}).get("phone_number")
+    if not phone:
+        return
+
+    profile_name = None
+    profile = session.get("customer_profile")
+    if isinstance(profile, dict):
+        profile_name = profile.get("name")
+
+    attribute_payload: Dict[str, Any] = {}
+    city_value = address.get("city")
+    if city_value:
+        attribute_payload["city"] = city_value
+
+    try:
+        ensure_customer_record(
+            phone,
+            name=profile_name,
+            attributes=attribute_payload or None,
+            address=address,
+        )
+        logger.info("Shipping address sync complete for phone=%s", phone)
+    except Exception:
+        logger.warning("Failed to sync shipping address for phone=%s", phone, exc_info=True)
 
 
 def generate_session_token() -> str:
@@ -438,6 +490,12 @@ def update_session_state(token: str, action: str, payload: Dict[str, Any]) -> Di
                 chat_entry["metadata"] = metadata
             data["chat_context"].append(chat_entry)
 
+        if isinstance(metadata, dict):
+            shipping_address = _sanitize_shipping_address(metadata.get("shipping_address"))
+            if shipping_address:
+                data["shipping_address"] = shipping_address
+                _sync_shipping_address(session, shipping_address)
+
         data["last_action"] = {"type": "chat_message", "sender": sender, "timestamp": _now_iso()}
 
         logger.info(f"Appended chat message for token={token}: sender={sender}")
@@ -514,7 +572,7 @@ async def session_login(request: LoginRequest):
         customer_payload["customer_id"] = customer_id
 
     try:
-        customer_record = ensure_csv_customer(customer_payload)
+        customer_record = ensure_customer(customer_payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

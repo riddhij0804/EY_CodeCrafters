@@ -31,12 +31,15 @@ from agent_client import call_agent
 # Orders repository for thread-safe CSV persistence
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import orders_repository
+    # ...existing code...
 
 # Load environment
 load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+    # ...existing code...
 
 # Load customer phone-to-ID mapping
 _customer_phone_map = {}
@@ -229,7 +232,7 @@ async def fallback_recommendations(intent: Dict[str, Any], limit: int = 5) -> Li
                 'name': row.get('ProductDisplayName') or row.get('name') or '',
                 'price': float(row.get('price') or row.get('MRP') or 0),
                 'personalized_reason': 'Recommended based on your query',
-                'image_url': row.get('image_url','') if 'image_url' in row.index else ''
+                # ...existing code...
             })
 
         return results
@@ -668,12 +671,10 @@ async def call_recommendation_worker(state: SalesAgentState) -> SalesAgentState:
                     "sku": item.get("sku"),
                     "name": item.get("name"),
                     "price": item.get("price"),
-                    "image": item.get("image_url", ""),
-                        "description": item.get("personalized_reason", ""),  # Use personalized_reason
-                        "personalized_reason": item.get("personalized_reason", ""),
-                        # Include gifting-specific fields when provided by recommendation worker
-                        "gift_message": item.get("gift_message") if isinstance(item, dict) else None,
-                        "gift_suitability": item.get("gift_suitability") if isinstance(item, dict) else None
+                    "description": item.get("personalized_reason", ""),
+                    "personalized_reason": item.get("personalized_reason", ""),
+                    "gift_message": item.get("gift_message") if isinstance(item, dict) else None,
+                    "gift_suitability": item.get("gift_suitability") if isinstance(item, dict) else None
                 }
                 for item in recommendations
             ]

@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import MainApp from './components/MainApp';
+import WhatsAppGate from './components/WhatsAppGate';
 import KioskChat from './components/KioskChat';
 import LandingPage from './components/pages/LandingPage';
 import LoginPage from './components/pages/LoginPage';
@@ -11,7 +11,7 @@ function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
-          <Route path="/chat" element={<MainApp />} />
+          <Route path="/chat" element={<WhatsAppGate />} />
           <Route path="/kiosk" element={<KioskChat />} />
         </Routes>
       </div>

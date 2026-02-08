@@ -26,13 +26,15 @@ export const getIssueTypes = async () => {
  * @param {string} returnData.product_sku - Product SKU
  * @param {string} returnData.reason_code - Return reason code
  * @param {string} returnData.additional_comments - Additional comments (optional)
- * @param {Array<string>} returnData.images - Image URLs (optional)
+ * @param {Array<string>} returnData.images - (removed, no longer used)
  * @returns {Promise<Object>} Return response with return_id
  */
 export const initiateReturn = async (returnData) => {
+  // Remove images from payload
+  const { images, ...rest } = returnData || {};
   return apiCall(API_ENDPOINTS.POST_PURCHASE_RETURN, {
     method: 'POST',
-    body: JSON.stringify(returnData),
+    body: JSON.stringify(rest),
   });
 };
 
