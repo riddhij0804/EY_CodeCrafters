@@ -18,6 +18,9 @@ import requests
 from pathlib import Path
 import pandas as pd
 import csv
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import orders_repository
 import json
 import sys
 
@@ -500,6 +503,78 @@ async def detect_intent_node(state: SalesAgentState) -> SalesAgentState:
     """
     logger.info(f"🤖 Detecting intent for: '{state['message'][:100]}...'")
     
+    # Special handling for __CHECKOUT__ command from web UI
+    if state["message"].strip() == "__CHECKOUT__":
+        logger.info("🛒 Detected __CHECKOUT__ command from web UI")
+        
+        # Extract cart data from metadata
+        cart = state.get("metadata", {}).get("cart", [])
+        source = state.get("metadata", {}).get("source", "unknown")
+        customer_id = state.get("metadata", {}).get("customer_id") or state.get("metadata", {}).get("user_id")
+        
+        if not cart:
+            state["intent"] = "fallback"
+            state["confidence"] = 1.0
+            state["entities"] = {}
+            state["intent_method"] = "checkout_empty_cart"
+            state["response"] = "Your cart is empty. Please add items before checkout."
+            logger.warning("⚠️ Checkout attempted with empty cart")
+            return state
+        
+        if not customer_id:
+            state["intent"] = "fallback"
+            state["confidence"] = 1.0
+            state["entities"] = {}
+            state["intent_method"] = "checkout_no_customer"
+            state["response"] = "Session expired. Please log in again to complete checkout."
+            logger.warning("⚠️ Checkout attempted without customer_id")
+            return state
+        
+        # Set payment intent with cart entities
+        state["intent"] = "payment"
+        state["confidence"] = 1.0
+        state["entities"] = {
+            "cart": cart,
+            "source": source,
+            "checkout_type": "cart_checkout",
+            "customer_id": customer_id,
+            "payment_method": "card"  # Use card method (processed via simulated gateway)
+        }
+        state["intent_method"] = "web_checkout"
+        
+        logger.info(f"✅ Checkout intent set with {len(cart)} items from {source} for customer {customer_id}")
+        return state
+    
+    # Special handling for post-payment processing trigger from web UI
+    if state.get("metadata", {}).get("source") == "post_payment_processing":
+        logger.info("🚀 Detected post-payment processing trigger from web UI")
+        
+        # Extract order_id from metadata
+        order_id = state.get("metadata", {}).get("order_id")
+        
+        if not order_id:
+            state["intent"] = "fallback"
+            state["confidence"] = 1.0
+            state["entities"] = {}
+            state["intent_method"] = "post_payment_no_order"
+            state["response"] = "I couldn't find the order ID to process. Please check your order details."
+            logger.warning("⚠️ Post-payment processing triggered without order_id")
+            return state
+        
+        # Set fulfillment intent to start post-payment processing
+        state["intent"] = "support"  # This routes to fulfillment_worker
+        state["confidence"] = 1.0
+        state["entities"] = {
+            "order_id": order_id,
+            "source": "post_payment",
+            "action": "start_processing",
+            "trigger_agents": ["fulfillment", "post_purchase", "stylist", "inventory"]
+        }
+        state["intent_method"] = "post_payment_trigger"
+        
+        logger.info(f"✅ Post-payment processing intent set for order {order_id}")
+        return state
+    
     try:
         # Call Vertex AI intent detector
         result = await vertex_detect_intent(
@@ -764,38 +839,52 @@ async def call_payment_worker(state: SalesAgentState) -> SalesAgentState:
             or metadata.get("customer_id")
             or metadata.get("user_id")
         )
-        items = entities.get("items") or metadata.get("cart_items", [])
-        payment_method = entities.get("payment_method") or metadata.get("payment_method")
+        
+        # Handle cart from web checkout or items from other sources
+        items = (
+            entities.get("cart")  # From __CHECKOUT__ command
+            or entities.get("items")
+            or metadata.get("cart_items", [])
+        )
+        
+        payment_method = entities.get("payment_method") or metadata.get("payment_method") or "card"
         shipping_address = entities.get("shipping_address") or metadata.get("shipping_address")
         
         logger.info(f"💳 Payment details: customer_id={customer_id}, items={len(items) if items else 0}")
         
         # If we have complete payment data, process it
         if customer_id and items and payment_method:
+            # Calculate total amount (handle both cart format and items format)
+            total_amount = sum([
+                float(i.get('unit_price') or i.get('price', 0)) * 
+                int(i.get('qty') or i.get('quantity', 1))
+                for i in items
+            ])
+            
             # Call payment agent to process payment
             payment_resp = await call_agent('payment', {
                 'action': 'process',
                 'customer_id': customer_id,
-                'amount': sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items]),
+                'amount': total_amount,
                 'payment_method': payment_method,
-                'order_id': f"ORD-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{customer_id[:8]}"
+                'order_id': orders_repository.generate_next_order_id()
             })
             
             # Check if payment was successful
             if payment_resp.get('success') or payment_resp.get('status') == 'success':
                 logger.info(f"✅ Payment successful: {payment_resp.get('transaction_id')}")
                 
-                # Generate order ID
-                order_id = f"ORD-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{customer_id[:8]}"
-                total_amount = sum([float(i.get('price', 0)) * int(i.get('quantity', 1)) for i in items])
+                # Use the order_id from payment response or generate one
+                order_id = payment_resp.get('order_id') or orders_repository.generate_next_order_id()
                 
                 # 3.5) Register order to orders.csv after successful payment
                 try:
                     csv_items: List[Dict[str, Any]] = []
                     for it in items:
+                        # Handle both cart format (sku, qty, unit_price) and items format (id, quantity, price)
                         sku = it.get('sku') or it.get('product_sku') or it.get('id')
-                        qty = int(it.get('quantity', 1))
-                        unit_price = float(it.get('price', 0))
+                        qty = int(it.get('qty') or it.get('quantity', 1))
+                        unit_price = float(it.get('unit_price') or it.get('price', 0))
                         csv_items.append({
                             'sku': sku,
                             'qty': qty,
@@ -957,9 +1046,76 @@ async def call_fulfillment_worker(state: SalesAgentState) -> SalesAgentState:
         # Extract order_id from entities or message
         entities = state.get("entities", {})
         order_id = entities.get("order_id")
+        source = entities.get("source")
+        trigger_agents = entities.get("trigger_agents", [])
+        action = entities.get("action")
         
-        logger.info(f"📋 Initial entities: {entities}")
-        logger.info(f"📦 Order ID from entities: {order_id}")
+        # Check if this is a post-payment trigger to start processing
+        if source == "post_payment" and action == "start_processing":
+            logger.info(f"🚀 Starting post-payment processing for order {order_id}")
+            
+            # Start fulfillment process
+            try:
+                fulfillment_response = await call_agent('fulfillment', {
+                    'action': 'start',
+                    'order_id': order_id,
+                    'inventory_status': 'RESERVED',
+                    'payment_status': 'SUCCESS'
+                })
+                logger.info(f"✅ Fulfillment started: {fulfillment_response}")
+            except Exception as e:
+                logger.error(f"❌ Failed to start fulfillment: {e}")
+            
+            # Trigger post-purchase agent
+            if 'post_purchase' in trigger_agents:
+                try:
+                    post_purchase_response = await call_agent('post_purchase', {
+                        'action': 'order_placed',
+                        'order_id': order_id,
+                        'customer_id': entities.get("customer_id")
+                    })
+                    logger.info(f"✅ Post-purchase notified: {post_purchase_response}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to notify post-purchase: {e}")
+            
+            # Trigger stylist agent for personalized recommendations
+            if 'stylist' in trigger_agents:
+                try:
+                    stylist_response = await call_agent('stylist', {
+                        'action': 'order_analysis',
+                        'order_id': order_id,
+                        'customer_id': entities.get("customer_id")
+                    })
+                    logger.info(f"✅ Stylist notified: {stylist_response}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to notify stylist: {e}")
+            
+            # Trigger inventory agent for stock updates
+            if 'inventory' in trigger_agents:
+                try:
+                    # Get order items to update inventory
+                    order_data = orders_repository.get_order_by_id(order_id)
+                    if order_data and 'items' in order_data:
+                        inventory_response = await call_agent('inventory', {
+                            'action': 'update_stock',
+                            'order_id': order_id,
+                            'items': order_data['items']
+                        })
+                        logger.info(f"✅ Inventory updated: {inventory_response}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to update inventory: {e}")
+            
+            # Set success response
+            state["response"] = (
+                f"🎉 Order {order_id} processing started!\n\n"
+                f"📦 Fulfillment: Order is being prepared for shipment\n"
+                f"👔 Stylist: Analyzing your purchase for personalized recommendations\n"
+                f"📊 Inventory: Stock levels updated\n"
+                f"💝 Post-Purchase: You'll receive follow-up care soon\n\n"
+                f"You'll receive updates on your order status. Track your order anytime!"
+            )
+            state["cards"] = []
+            return state
         
         # If no order_id in entities, try to find it in the message
         if not order_id:

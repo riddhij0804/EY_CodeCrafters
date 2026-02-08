@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Search,
   ShoppingCart,
@@ -12,10 +12,13 @@ import {
   User,
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { useCart } from "@/contexts/CartContext.jsx";
 import heroModel from "../../assets/model.png";
 import sessionStore from "../../lib/session";
 
 const LandingPage = () => {
+  const navigate = useNavigate();
+  const { getCartCount } = useCart();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [customerProfile, setCustomerProfile] = useState(() => sessionStore.getProfile());
@@ -142,11 +145,17 @@ const LandingPage = () => {
                   SIGN IN
                 </Link>
               )}
-              <button className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors" aria-label="Shopping cart">
+              <button 
+                onClick={() => navigate('/cart')}
+                className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors" 
+                aria-label="Shopping cart"
+              >
                 <ShoppingCart className="w-5 h-5" />
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 text-red-700 text-xs rounded-full flex items-center justify-center">
-                  0
-                </span>
+                {getCartCount() > 0 && (
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-yellow-400 text-red-700 text-xs rounded-full flex items-center justify-center font-semibold">
+                    {getCartCount()}
+                  </span>
+                )}
               </button>
 
               {profile && profileMenuOpen && (
@@ -248,6 +257,19 @@ const LandingPage = () => {
               >
                 CONTACT
               </motion.a>
+              <motion.button
+                initial={{ x: -20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                transition={{ delay: 0.28 }}
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  navigate('/cart');
+                }}
+                className="flex items-center gap-2 text-sm font-medium text-yellow-100 hover:text-yellow-200 transition-colors w-full"
+              >
+                <ShoppingCart className="w-5 h-5" />
+                <span>CART ({getCartCount()})</span>
+              </motion.button>
               <motion.div
                 initial={{ x: -20, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
