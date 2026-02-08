@@ -173,6 +173,40 @@ export const salesAgentService = {
   },
 
   /**
+   * Step 6.5: Trigger post-payment processing after successful Razorpay payment
+   * Called by frontend after payment verification to start agent workflow
+   */
+  triggerPostPayment: async (orderId, customerId, sessionToken, amountPaid, paymentId, transactionId = null) => {
+    try {
+      const response = await fetch(API_ENDPOINTS.POST_PAYMENT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          order_id: orderId,
+          customer_id: customerId,
+          session_token: sessionToken,
+          amount_paid: amountPaid,
+          payment_id: paymentId,
+          transaction_id: transactionId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Post-payment trigger error:', error);
+      return {
+        status: 'error',
+        error: error.message,
+        message: 'Failed to trigger post-payment processing'
+      };
+    }
+  },
    * Step 7: Get seasonal trends
    * Based on: "System proactively highlights current seasonal trends"
    */

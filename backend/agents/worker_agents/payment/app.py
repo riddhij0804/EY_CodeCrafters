@@ -26,9 +26,13 @@ import redis_utils
 import payment_repository
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 import orders_repository
 from db import supabase_client
+
+# Load environment variables
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 app = FastAPI(
     title="Payment Agent",
@@ -1153,6 +1157,9 @@ async def process_payment(request: PaymentRequest):
     5. Return response
     """
     try:
+        # Generate timestamp for transaction
+        timestamp = datetime.utcnow().isoformat()
+        
         # Step 1: Validate payment method
         if not redis_utils.validate_payment_method(request.payment_method):
             raise HTTPException(

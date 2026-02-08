@@ -27,7 +27,7 @@ SERVICES = [
     ("Sales Agent", "agents/sales_agent", 8010),
 ]
 
-def start_service(name, path, port):
+def start_service(name, path, port, env_vars=None):
     """Start a single service"""
     # Handle both direct .py files and directories
     if path.endswith('.py'):
@@ -45,10 +45,16 @@ def start_service(name, path, port):
     
     print(f"🚀 Starting {name} on port {port}...")
     
+    # Set up environment variables
+    env = os.environ.copy()
+    if env_vars:
+        env.update(env_vars)
+    
     try:
         process = subprocess.Popen(
             [sys.executable, script_name],
             cwd=service_path,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -69,7 +75,9 @@ def main():
     
     # Start all services
     for name, directory, port in SERVICES:
-        process = start_service(name, directory, port)
+        # Set USE_REAL_AGENTS=true for Sales Agent
+        env_vars = {"USE_REAL_AGENTS": "true"} if name == "Sales Agent" else None
+        process = start_service(name, directory, port, env_vars)
         if process:
             processes.append((name, process, port))
     

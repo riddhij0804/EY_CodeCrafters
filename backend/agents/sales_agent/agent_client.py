@@ -357,6 +357,10 @@ async def call_real_agent(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
     if agent_name not in AGENT_URLS:
         raise ValueError(f"Unknown agent: {agent_name}")
 
+    # Payment has concrete REST endpoints instead of /handle
+    if agent_name == "payment":
+        return await _call_payment_agent(payload)
+
     # Fulfillment has concrete REST endpoints instead of /handle
     if agent_name == "fulfillment":
         return await _call_fulfillment_agent(payload)
@@ -378,6 +382,60 @@ async def call_real_agent(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
     except httpx.HTTPStatusError as e:
         logger.error(f"❌ HTTP error from {agent_name}: {e.response.status_code}")
         raise Exception(f"{agent_name} service error: {e.response.status_code}")
+
+
+async def _call_payment_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Route payment actions to concrete endpoints."""
+    action = payload.get("action", "process")
+    base = AGENT_URLS["payment"]
+
+    try:
+        async with httpx.AsyncClient(timeout=AGENT_TIMEOUT) as client:
+            if action == "process":
+                # Transform payload to match payment agent's expected format
+                body = {
+                    "user_id": payload.get("customer_id") or payload.get("user_id"),
+                    "amount": float(payload.get("amount", 0)),
+                    "payment_method": payload.get("payment_method", "razorpay"),
+                    "order_id": payload.get("order_id"),
+                    "metadata": payload.get("metadata", {}),
+                }
+                url = f"{base}/payment/process"
+                logger.info(f"🌐 REAL CALL: payment process at {url}")
+                logger.info(f"💳 Payment request: {body}")
+                response = await client.post(url, json=body)
+                response.raise_for_status()
+                return response.json()
+
+            elif action == "refund":
+                body = {
+                    "transaction_id": payload.get("transaction_id"),
+                    "amount": float(payload.get("amount", 0)),
+                    "reason": payload.get("reason", "Customer request"),
+                }
+                url = f"{base}/payment/refund"
+                logger.info(f"🌐 REAL CALL: payment refund at {url}")
+                response = await client.post(url, json=body)
+                response.raise_for_status()
+                return response.json()
+
+            else:
+                raise ValueError(f"Unknown payment action: {action}")
+
+    except httpx.TimeoutException:
+        logger.error(f"⏱️ Timeout calling payment agent after {AGENT_TIMEOUT}s")
+        raise Exception("Payment service timeout")
+    except httpx.ConnectError:
+        logger.error(f"🔌 Cannot connect to payment agent at {base}")
+        raise Exception("Cannot connect to payment service")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ HTTP error from payment agent: {e.response.status_code}")
+        try:
+            error_detail = e.response.json()
+            logger.error(f"Error details: {error_detail}")
+        except:
+            pass
+        raise Exception(f"Payment service error: {e.response.status_code}")
 
 
 async def _call_fulfillment_agent(payload: Dict[str, Any]) -> Dict[str, Any]:

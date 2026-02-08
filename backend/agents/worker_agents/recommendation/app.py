@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - fallback for direct execution
 
 # LLM imports
 try:
-    import google.generativeai as genai
+    import google.genai as genai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -534,7 +534,8 @@ def generate_personalized_reason(
     customer_profile: Dict,
     past_skus: List[str],
     context: str = "recommendation",
-    target_gender: str = None
+    target_gender: str = None,
+    angle: Optional[str] = None
 ) -> str:
     """Generate human-like personalized reasoning for recommendation using LLM with cascading fallbacks"""
     
@@ -566,7 +567,7 @@ def generate_personalized_reason(
     if is_gift:
         gift_context = f"\n\nIMPORTANT: {first_name} (a {customer_gender}) is shopping for {target_gender} products - this is likely a gift! Mention this thoughtfully in your recommendation."
     
-    prompt = f"""You are a friendly, knowledgeable shopping assistant. Generate a brief, natural, personalized recommendation reason (1-2 sentences max).
+    prompt = f"""You are a helpful and knowledgeable and really talented shopping assistant. Based on the customer's profile and purchase history, you will provide a warm, personalized reason why they would love the recommended product. But use the customer profile information just to understand about the customer don't mention everything in reason so that it seems naturally. Use the details below to craft your response. Don't just say "you might like this because of your past purchases" - be specific and genuine, like a friend recommending something they know you'll love. Don't mention the customer's name in the reason, but do use their history and preferences to make it personalized and heartfelt.
 
 Customer Profile:
 - Name: {first_name}
@@ -588,7 +589,9 @@ Product to Recommend:
 
 Context: This is {"an upsell suggestion" if context == "upsell" else "a cross-sell item" if context == "cross_sell" else "a main recommendation"}
 
-Write a warm, personalized reason (1-2 sentences) explaining why {first_name} would love this product{" as a gift" if is_gift else ""}. Be specific, mention their history or preferences, and sound like a helpful friend - not a salesperson. Keep it conversational and genuine."""
+Focus: {angle or 'Give a single, specific reason (design, color, comfort, use-case, material, value or trend)'}
+
+Write a warm, personalized reason (2-3 sentences) explaining why this product fits the chosen focus and why the customer would enjoy it. Be specific, mention one concrete product attribute and one customer-related tie (past brand, category, or behavior). Use a friendly in-store sales tone and finish with a subtle CTA. Do NOT repeat the same structure for multiple products."""
 
     # CASCADING FALLBACK: Groq → Gemini → Template
     
@@ -684,7 +687,13 @@ def get_upsell_product(
     
     # Pick top rated
     upsell = upsells.sort_values('ratings', ascending=False).iloc[0]
-    
+    # Pick an angle deterministically based on SKU to vary reasons
+    angles = ['color','comfort','use-case','material','value','design','trend']
+    try:
+        angle = angles[abs(hash(upsell['sku'])) % len(angles)]
+    except Exception:
+        angle = None
+
     return {
         'sku': upsell['sku'],
         'name': upsell['ProductDisplayName'],
@@ -696,7 +705,7 @@ def get_upsell_product(
         'in_stock': get_inventory_availability(upsell['sku']),
         'image_url': _resolved_image(upsell.get('image_url')),
         'personalized_reason': generate_personalized_reason(
-            upsell, customer_profile, past_skus, context="upsell"
+            upsell, customer_profile, past_skus, context="upsell", angle=angle
         )
     }
 
@@ -747,7 +756,13 @@ def get_cross_sell_product(
     # Rank and pick top
     ranked = rank_products(cross_sells, customer_profile, past_skus)
     cross_sell = ranked.iloc[0]
-    
+    # Pick an angle deterministically based on SKU to vary reasons
+    angles = ['color','comfort','use-case','material','value','design','trend']
+    try:
+        angle = angles[abs(hash(cross_sell['sku'])) % len(angles)]
+    except Exception:
+        angle = None
+
     return {
         'sku': cross_sell['sku'],
         'name': cross_sell['ProductDisplayName'],
@@ -759,7 +774,7 @@ def get_cross_sell_product(
         'in_stock': get_inventory_availability(cross_sell['sku']),
         'image_url': _resolved_image(cross_sell.get('image_url')),
         'personalized_reason': generate_personalized_reason(
-            cross_sell, customer_profile, past_skus, context="cross_sell"
+            cross_sell, customer_profile, past_skus, context="cross_sell", angle=angle
         )
     }
 
@@ -782,18 +797,29 @@ async def _mode_normal(request: RecommendationRequest, customer_profile: Dict, p
     
     # Build recommendations with unique LLM reasons
     recommendations = []
-    for _, product in ranked.head(request.limit * 3).iterrows():
+    for i, (_, product) in enumerate(ranked.head(request.limit * 3).iterrows()):
         if len(recommendations) >= request.limit:
             break
         
         if not get_inventory_availability(product['sku']):
             continue
         
+        # Choose an angle per product to force unique reasons (deterministic by index/SKU)
+        angles = ['color','comfort','use-case','material','value','design','trend']
+        try:
+            angle = angles[i % len(angles)]
+        except Exception:
+            try:
+                angle = angles[abs(hash(product['sku'])) % len(angles)]
+            except Exception:
+                angle = None
+
         # Generate UNIQUE personalized reason via LLM
         reason = generate_personalized_reason(
             product, customer_profile, past_skus,
             context="recommendation",
-            target_gender=target_gender
+            target_gender=target_gender,
+            angle=angle
         )
         
         recommendations.append({
@@ -908,29 +934,42 @@ async def _mode_gifting_genius(request: RecommendationRequest, customer_profile:
 
     # RE-APPLY GENDER FILTER to fallback
     if recipient_gender in ['male', 'female']:
+        # Be less strict: include neutral items (no explicit gender tokens) and items that match the target gender.
+        attrs = filtered['attributes'].astype(str)
+
+        name_male = filtered['ProductDisplayName'].str.contains(r"\b(?:men|man|boys|boy|men's|boy's)\b", case=False, na=False, regex=True)
+        name_female = filtered['ProductDisplayName'].str.contains(r"\b(?:women|woman|girls|girl|women's|girl's)\b", case=False, na=False, regex=True)
+
+        attr_male = attrs.str.contains(r'"gender"\s*:\s*"(?:men|male|boy|boys)"', case=False, na=False, regex=True)
+        attr_female = attrs.str.contains(r'"gender"\s*:\s*"(?:women|female|girl|girls)"', case=False, na=False, regex=True)
+
+        male_mask = attr_male | name_male
+        female_mask = attr_female | name_female
+        neutral_mask = ~(name_male | name_female | attr_male | attr_female)
+
         if recipient_gender == 'male':
-            filtered = filtered[
-                (filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True)) &
-                (~filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True))
-            ]
-        else:  # female
-            filtered = filtered[
-                (filtered['ProductDisplayName'].str.contains(r'\b(?:women|woman|girls|women\'s)\b', case=False, na=False, regex=True)) &
-                (~filtered['ProductDisplayName'].str.contains(r'\b(?:men|man|boys|men\'s)\b', case=False, na=False, regex=True))
-            ]
-        logger.info(f"   Fallback filtered to {len(filtered)} gender-appropriate products")
+            filtered = filtered[male_mask | neutral_mask]
+        else:
+            filtered = filtered[female_mask | neutral_mask]
+
+        logger.info(f"   Fallback gender-relaxed filtered to {len(filtered)} products")
     
     filtered = filtered.sort_values('ratings', ascending=False)
     
     # Build gift recommendations with UNIQUE LLM reasons
     recommendations = []
-    for _, product in filtered.head(request.limit * 2).iterrows():
+
+    # Increase candidate pool so inventory checks and strict filters don't reduce results
+    candidate_count = max(request.limit * 6, 30)
+    candidate_pool = filtered.head(candidate_count)
+
+    for _, product in candidate_pool.iterrows():
         if len(recommendations) >= request.limit:
             break
-        
+
         if not get_inventory_availability(product['sku']):
             continue
-        
+
         # Generate TWO LLM responses: appropriateness reason + heartfelt message
         gift_reason = None
         gift_message = None

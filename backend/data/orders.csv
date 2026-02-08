@@ -947,17 +947,3 @@ ORD000944,452,"[{""sku"": ""SKU000004"", ""qty"": 1, ""unit_price"": 2019.94, ""
 ORD000945,452,"[{""sku"": ""SKU000058"", ""qty"": 1, ""unit_price"": 1912.57, ""line_total"": 1912.57}]",1912.57,paid,2026-02-01T04:32:28.434803
 ORD000946,452,"[{""sku"": ""SKU000133"", ""qty"": 1, ""unit_price"": 831.85, ""line_total"": 831.85}]",831.85,paid,2026-02-01T04:35:47.751957
 ORD000947,452,"[{""qty"": 1, ""sku"": ""SKU000133"", ""location"": ""store:STORE_MUMBAI"", ""quantity"": 1, ""store_id"": ""STORE_MUMBAI"", ""line_total"": 831.85, ""unit_price"": 831.85}]",831.85,paid,2026-02-01T04:41:13.964052
-ORD000948,102,"[{""sku"": ""SKU000192"", ""qty"": 1, ""unit_price"": 3478.63, ""line_total"": 3478.63}]",3478.63,paid,2026-01-31T19:56:50.200172
-ORD000949,102,"[{""sku"": ""SKU000115"", ""qty"": 1, ""unit_price"": 3313.85, ""line_total"": 3313.85}]",3313.85,paid,2026-01-31T20:01:40.618500
-ORD000950,103,"[{""sku"": ""SKU000013"", ""qty"": 1, ""unit_price"": 2057.12, ""line_total"": 2057.12}]",2057.12,paid,2026-01-31T20:07:14.044597
-ORD000951,103,"[{""sku"": ""SKU000157"", ""qty"": 1, ""unit_price"": 2804.8, ""line_total"": 2804.8}]",2804.8,paid,2026-01-31T20:15:31.673227
-ORD000952,103,"[{""sku"": ""SKU000188"", ""qty"": 1, ""unit_price"": 2149.27, ""line_total"": 2149.27}]",2149.27,paid,2026-01-31T20:20:28.897203
-ORD000953,103,"[{""sku"": ""SKU000188"", ""qty"": 1, ""unit_price"": 2149.27, ""line_total"": 2149.27}]",2149.27,paid,2026-01-31T20:25:18.035401
-ORD000954,104,"[{""sku"": ""SKU000185"", ""qty"": 1, ""unit_price"": 1174.97, ""line_total"": 1174.97}]",1174.97,paid,2026-01-31T20:37:53.082997
-ORD000955,105,"[{""sku"": ""SKU000137"", ""qty"": 1, ""unit_price"": 3318.59, ""line_total"": 3318.59}]",3318.59,paid,2026-01-31T20:47:34.893967
-ORD000956,452,"[{""qty"": 1, ""sku"": ""SKU000166"", ""location"": ""store:STORE_MUMBAI"", ""quantity"": 1, ""store_id"": ""STORE_MUMBAI"", ""line_total"": 1906.16, ""unit_price"": 1906.16}]",1906.16,paid,2026-02-01T15:12:16.811746
-ORD000957,452,"[{""qty"": 1, ""sku"": ""SKU000070"", ""location"": ""store:STORE_MUMBAI"", ""quantity"": 1, ""store_id"": ""STORE_MUMBAI"", ""line_total"": 2671.0, ""unit_price"": 2671.0}]",2671.0,paid,2026-02-01T15:22:58.717935
-ORD000958,452,"[{""qty"": 1, ""sku"": ""SKU000058"", ""location"": ""store:STORE_MUMBAI"", ""quantity"": 1, ""store_id"": ""STORE_MUMBAI"", ""line_total"": 1912.57, ""unit_price"": 1912.57}]",1912.57,paid,2026-02-01T15:29:17.202818
-ORD000959,452,"[{""qty"": 1, ""sku"": ""SKU000013"", ""location"": ""store:STORE_MUMBAI"", ""quantity"": 1, ""store_id"": ""STORE_MUMBAI"", ""line_total"": 2057.12, ""unit_price"": 2057.12}]",2057.12,paid,2026-02-01T15:40:02.172233
-ORD000960,452,"[{""qty"": 1, ""sku"": ""SKU000188"", ""location"": ""store:STORE_MUMBAI"", ""quantity"": 1, ""store_id"": ""STORE_MUMBAI"", ""line_total"": 2149.27, ""unit_price"": 2149.27}]",2149.27,paid,2026-02-01T15:51:30.344539
-ORD000961,452,"[{""qty"": 1, ""sku"": ""SKU000166"", ""location"": ""store:STORE_MUMBAI"", ""quantity"": 1, ""store_id"": ""STORE_MUMBAI"", ""line_total"": 1906.16, ""unit_price"": 1906.16}]",1906.16,paid,2026-02-01T15:56:59.924940
