@@ -139,6 +139,12 @@ def load_csv_fallback():
         if "quantity" in inventory.columns and "qty" not in inventory.columns:
             inventory = inventory.rename(columns={"quantity": "qty"})
         
+        # Normalize products CSV column names to match code expectations
+        if "product_display_name" in products.columns and "ProductDisplayName" not in products.columns:
+            products = products.rename(columns={"product_display_name": "ProductDisplayName"})
+        if "sub_category" in products.columns and "subcategory" not in products.columns:
+            products = products.rename(columns={"sub_category": "subcategory"})
+        
         return products, customers, orders, inventory
     except Exception as e:
         logger.error(f"❌ Failed to load CSV data: {e}")
@@ -495,17 +501,45 @@ def filter_products_by_intent(
 def rank_products(
     products: pd.DataFrame,
     customer_profile: Dict,
-    past_skus: List[str]
+    past_skus: List[str],
+    intent: Dict[str, Any] = None
 ) -> pd.DataFrame:
-    """Rank products using rating, past purchases, and loyalty tier"""
+    """Rank products using ratings, review count, past purchases, loyalty tier, freshness, and color affinity"""
     
     if products.empty:
         return products
     
     ranked = products.copy()
+    intent = intent or {}
     
     # Base score from ratings
     ranked['score'] = ranked['ratings'] * 10
+    
+    # Boost from review count (popularity signal) - normalized so higher counts boost moderately
+    if 'review_count' in ranked.columns:
+        try:
+            review_bonus = ranked['review_count'].astype(float).fillna(0) / 100
+            ranked['score'] += review_bonus.clip(0, 5)  # Cap at 5 points
+        except Exception:
+            pass
+    
+    # Freshness boost for current/recent products
+    if 'season' in ranked.columns and 'year' in ranked.columns:
+        try:
+            from datetime import datetime
+            current_year = datetime.now().year
+            year_diff = ranked['year'].astype(float).fillna(0)
+            # Favor recent years (within 2 years) slightly
+            ranked['score'] += (2 - year_diff.clip(0, 2)) * 0.5
+        except Exception:
+            pass
+    
+    # Base color affinity boost (if customer has color preference in intent)
+    if 'color' in intent and intent['color']:
+        preferred_color = intent['color'].lower()
+        if 'base_colour' in ranked.columns:
+            color_match = ranked['base_colour'].astype(str).str.lower().str.contains(preferred_color, na=False)
+            ranked['score'] += color_match.astype(int) * 3
     
     # Boost from past brand purchases
     past_brands = []
@@ -552,6 +586,31 @@ def generate_personalized_reason(
     rating = product['ratings']
     product_name = product['ProductDisplayName']
     
+    # Extract product attributes for richer reasoning
+    usage = product.get('usage', 'General').title() if pd.notna(product.get('usage')) else 'General'
+    base_colour = product.get('base_colour', '').title() if pd.notna(product.get('base_colour')) else ''
+    article_type = product.get('article_type', '').title() if pd.notna(product.get('article_type')) else ''
+    review_count = product.get('review_count', 0) if pd.notna(product.get('review_count')) else 0
+    
+    # Parse attributes JSON if present
+    attributes_text = ""
+    if pd.notna(product.get('attributes')):
+        try:
+            import json
+            attrs_str = str(product['attributes']).replace("'", '"')
+            attrs_dict = json.loads(attrs_str)
+            if isinstance(attrs_dict, dict):
+                # Extract key details
+                material = attrs_dict.get('material', '')
+                size = attrs_dict.get('sizes', attrs_dict.get('size', ''))
+                fit = attrs_dict.get('fit', '')
+                details = [f"Material: {material}" if material else None,
+                          f"Sizes: {size}" if size else None,
+                          f"Fit: {fit}" if fit else None]
+                attributes_text = " • ".join([d for d in details if d])
+        except Exception:
+            pass
+    
     # Check if this is gift-giving scenario
     is_gift = target_gender and target_gender.lower() != customer_gender.lower()
     
@@ -567,7 +626,19 @@ def generate_personalized_reason(
     if is_gift:
         gift_context = f"\n\nIMPORTANT: {first_name} (a {customer_gender}) is shopping for {target_gender} products - this is likely a gift! Mention this thoughtfully in your recommendation."
     
-    prompt = f"""You are a helpful and knowledgeable and really talented shopping assistant. Based on the customer's profile and purchase history, you will provide a warm, personalized reason why they would love the recommended product. But use the customer profile information just to understand about the customer don't mention everything in reason so that it seems naturally. Use the details below to craft your response. Don't just say "you might like this because of your past purchases" - be specific and genuine, like a friend recommending something they know you'll love. Don't mention the customer's name in the reason, but do use their history and preferences to make it personalized and heartfelt.
+    # Enhanced prompt with additional product details
+    product_details = f"""- Name: {product_name}
+- Brand: {brand}
+- Category: {category} ({article_type if article_type else 'Product'})
+- Usage: {usage}
+- Color: {base_colour if base_colour else 'Various'}
+- Price: ₹{price} {f'(MSRP: ₹{product.get("msrp", "")})' if pd.notna(product.get("msrp")) else ''}
+- Rating: {rating}★ (from {int(review_count)} reviews)
+{f'- Attributes: {attributes_text}' if attributes_text else ''}
+- Target Gender: {target_gender or customer_gender}
+{gift_context}"""
+    
+    prompt = f"""You are a helpful, knowledgeable, and talented shopping assistant. Based on the customer's profile and the product details, provide a warm, personalized reason why they would love this recommended product. Use the information to understand the customer, but don't over-mention in the reason—it should feel natural, like a friend recommending something they know you'll love. Don't mention the customer's name, but weave in their history and preferences naturally.
 
 Customer Profile:
 - Name: {first_name}
@@ -579,13 +650,7 @@ Customer Profile:
 - Previously Bought Categories: {', '.join(past_categories[:3]) if past_categories else 'None'}
 
 Product to Recommend:
-- Name: {product_name}
-- Brand: {brand}
-- Category: {category}
-- Price: ₹{price}
-- Rating: {rating}★
-- Target Gender: {target_gender or customer_gender}
-{gift_context}
+{product_details}
 
 Context: This is {"an upsell suggestion" if context == "upsell" else "a cross-sell item" if context == "cross_sell" else "a main recommendation"}
 
@@ -793,7 +858,7 @@ async def _mode_normal(request: RecommendationRequest, customer_profile: Dict, p
     if filtered.empty:
         filtered = products_df[products_df['ratings'] >= 4.5].copy()
     
-    ranked = rank_products(filtered, customer_profile, past_skus)
+    ranked = rank_products(filtered, customer_profile, past_skus, intent=request.intent)
     
     # Build recommendations with unique LLM reasons
     recommendations = []

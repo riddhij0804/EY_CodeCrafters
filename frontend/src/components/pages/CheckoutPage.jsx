@@ -5,6 +5,7 @@ import { ArrowLeft, CheckCircle, AlertCircle, Loader, Minus, Plus, Trash2 } from
 import sessionStore from '@/lib/session';
 import salesAgentService from '@/services/salesAgentService';
 import { createRazorpayOrder, verifyRazorpayPayment } from '@/services/paymentService';
+import Navbar from '@/components/Navbar.jsx';
 
 const CheckoutPage = () => {
   const navigate = useNavigate();
@@ -157,8 +158,10 @@ const CheckoutPage = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 via-yellow-50 to-red-50">
+      <Navbar />
+      
       {/* Header */}
-      <div className="bg-gradient-to-r from-red-600 to-orange-600 text-white shadow-md">
+      <div className="mt-20 bg-gradient-to-r from-red-600 to-orange-600 text-white shadow-md">
         <div className="max-w-4xl mx-auto px-4 py-6">
           <div className="flex items-center gap-4">
             <button

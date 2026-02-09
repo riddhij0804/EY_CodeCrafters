@@ -58,6 +58,12 @@ class FAISSIndexBuilder:
         print(f"Loading products from {self.products_csv}")
         df = pd.read_csv(self.products_csv)
         
+        # Normalize column names for new CSV schema
+        if "product_display_name" in df.columns and "ProductDisplayName" not in df.columns:
+            df = df.rename(columns={"product_display_name": "ProductDisplayName"})
+        if "sub_category" in df.columns and "subcategory" not in df.columns:
+            df = df.rename(columns={"sub_category": "subcategory"})
+        
         if category_filter:
             df = df[df['category'].str.lower() == category_filter.lower()]
             print(f"Filtered to {len(df)} products in category: {category_filter}")

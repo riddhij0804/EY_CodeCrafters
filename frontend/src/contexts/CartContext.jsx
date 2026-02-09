@@ -56,7 +56,7 @@ export const CartProvider = ({ children }) => {
 
   const getCartTotal = () => {
     return cartItems.reduce((sum, item) => {
-      const price = parseFloat(item.unit_price || 0);
+      const price = parseFloat(item.price || 0);
       return sum + price * item.qty;
     }, 0);
   };

@@ -26,6 +26,12 @@ INVENTORY_CSV = os.path.join(BASE_DIR, "../../../data/inventory.csv")
 
 products_df = pd.read_csv(PRODUCTS_CSV)
 
+# Normalize column names for new CSV schema
+if "product_display_name" in products_df.columns and "ProductDisplayName" not in products_df.columns:
+    products_df = products_df.rename(columns={"product_display_name": "ProductDisplayName"})
+if "sub_category" in products_df.columns and "subcategory" not in products_df.columns:
+    products_df = products_df.rename(columns={"sub_category": "subcategory"})
+
 inventory_df = pd.read_csv(INVENTORY_CSV)
 if "qty" in inventory_df.columns and "quantity" not in inventory_df.columns:
     inventory_df = inventory_df.rename(columns={"qty": "quantity"})

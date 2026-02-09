@@ -66,6 +66,11 @@ try:
     products_csv = Path(__file__).parent.parent.parent.parent / 'backend' / 'data' / 'products.csv'
     if products_csv.exists():
         products_df = pd.read_csv(products_csv)
+        # Normalize column names for new CSV schema
+        if "product_display_name" in products_df.columns and "ProductDisplayName" not in products_df.columns:
+            products_df = products_df.rename(columns={"product_display_name": "ProductDisplayName"})
+        if "sub_category" in products_df.columns and "subcategory" not in products_df.columns:
+            products_df = products_df.rename(columns={"sub_category": "subcategory"})
         # Create lowercase name → SKU mapping for case-insensitive lookup
         _product_name_to_sku = dict(zip(
             products_df['ProductDisplayName'].str.lower(), 

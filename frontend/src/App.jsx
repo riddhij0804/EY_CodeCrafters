@@ -6,6 +6,8 @@ import LandingPage from './components/pages/LandingPage';
 import LoginPage from './components/pages/LoginPage';
 import CartPage from './components/pages/CartPage';
 import CheckoutPage from './components/pages/CheckoutPage';
+import ProductCatalog from './components/pages/ProductCatalog';
+import ProductDetail from './components/pages/ProductDetail';
 
 function App() {
   return (
@@ -17,6 +19,8 @@ function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/chat" element={<MainApp />} />
             <Route path="/kiosk" element={<KioskChat />} />
+            <Route path="/products" element={<ProductCatalog />} />
+            <Route path="/products/:sku" element={<ProductDetail />} />
             <Route path="/cart" element={<CartPage />} />
             <Route path="/checkout" element={<CheckoutPage />} />
           </Routes>
