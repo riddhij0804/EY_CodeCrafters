@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import authService from '../../services/authService';
 import sessionStore from '../../lib/session';
 import Navbar from '@/components/Navbar.jsx';
@@ -20,6 +20,8 @@ const LoginPage = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const navigate = useNavigate();
+  const location = useLocation();
+  const redirectTo = location.state?.redirectTo || '/';
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -66,7 +68,7 @@ const LoginPage = () => {
 
       const assignedId = response.customer?.customer_id || response.customer?.customerId;
       setSuccess(assignedId ? `Session ready! Your customer ID is ${assignedId}. Redirecting you now...` : 'Login successful. Redirecting you now...');
-      setTimeout(() => navigate('/'), 1200);
+      setTimeout(() => navigate(redirectTo, { replace: true }), 1200);
     } catch (submitError) {
       setError(submitError?.message || 'Failed to create session.');
     } finally {

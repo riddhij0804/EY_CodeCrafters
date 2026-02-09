@@ -5,7 +5,26 @@
 
 import { useState, useEffect } from 'react';
 import { salesAgentService } from '../services';
+import { toAssetUrl } from '../lib/assets';
 import { ShoppingBag, Upload, Gift, TrendingUp, CheckCircle, Truck, Package } from 'lucide-react';
+
+const resolveProductImage = (product) => {
+  if (!product) return null;
+  let url = null;
+  if (product.primary_image) url = toAssetUrl(product.primary_image);
+  else if (product.image) url = toAssetUrl(product.image);
+  else if (product.image_url) url = toAssetUrl(product.image_url);
+  else if (Array.isArray(product.image_urls) && product.image_urls.length > 0) {
+    url = toAssetUrl(product.image_urls[0]);
+  }
+  // Debug: log the resolved image URL and product
+  if (url) {
+    console.log('Resolved image URL:', url, product);
+  } else {
+    console.warn('No image URL resolved for product:', product);
+  }
+  return url;
+};
 
 const ShoppingWorkflow = () => {
   const [step, setStep] = useState('discovery');
@@ -67,36 +86,12 @@ const ShoppingWorkflow = () => {
     }
   };
 
-  // Step 5: Verify Inventory Before Checkout
   const verifyInventory = async () => {
     try {
       const response = await salesAgentService.verifyInventory(cart);
       setInventoryStatus(response);
-      
-      if (response.all_available) {
-        setStep('payment');
-      }
     } catch (error) {
       console.error('Inventory verification error:', error);
-    }
-  };
-
-  // Step 6: Complete Checkout
-  const completeCheckout = async () => {
-    try {
-      const response = await salesAgentService.processCheckout(
-        userId,
-        cart,
-        { type: 'credit_card', card_number: '**** **** **** 1234' },
-        { address: '123 Main St', city: 'Mumbai', zip: '400001' }
-      );
-      
-      if (response.status === 'completed') {
-        setOrderStatus(response);
-        setStep('completed');
-      }
-    } catch (error) {
-      console.error('Checkout error:', error);
     }
   };
 
@@ -194,12 +189,24 @@ const DiscoveryStep = ({ onDiscovery, trends }) => (
           <TrendingUp className="w-5 h-5" /> Seasonal Trends
         </h3>
         <div className="grid grid-cols-5 gap-4">
-          {trends.slice(0, 5).map((item, idx) => (
-            <div key={idx} className="border rounded-lg p-3">
-              <div className="text-sm font-medium truncate">{item.ProductDisplayName}</div>
-              <div className="text-lg font-bold text-blue-600">₹{item.price}</div>
-            </div>
-          ))}
+          {trends.slice(0, 5).map((item, idx) => {
+            const imageSrc = resolveProductImage(item);
+            return (
+              <div key={idx} className="border rounded-lg p-3 flex gap-3 items-center">
+                <div className="w-12 h-12 rounded bg-gray-100 flex-shrink-0 overflow-hidden">
+                  {imageSrc ? (
+                    <img src={imageSrc} alt={item.ProductDisplayName || item.name || 'Trend'} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-400 uppercase">No image</div>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium truncate">{item.ProductDisplayName}</div>
+                  <div className="text-lg font-bold text-blue-600">₹{item.price}</div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     )}
@@ -225,18 +232,27 @@ const BrowsingStep = ({ recommendations, onAddToCart, onVisualSearch, onGiftMode
     </div>
     
     <div className="grid grid-cols-3 gap-6">
-      {recommendations.map((product, idx) => (
-        <div key={idx} className="border rounded-lg p-4 hover:shadow-lg transition">
-          <div className="aspect-square bg-gray-100 rounded mb-3"></div>
-          <h3 className="font-semibold text-sm mb-2 truncate">{product.ProductDisplayName || product.name}</h3>
-          <div className="flex justify-between items-center">
-            <span className="text-xl font-bold text-blue-600">₹{product.price}</span>
-            <button onClick={() => onAddToCart(product)} className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">
-              Add
-            </button>
+      {recommendations.map((product, idx) => {
+        const imageSrc = resolveProductImage(product);
+        return (
+          <div key={idx} className="border rounded-lg p-4 hover:shadow-lg transition">
+            <div className="aspect-square bg-gray-100 rounded mb-3 overflow-hidden flex items-center justify-center">
+              {imageSrc ? (
+                <img src={imageSrc} alt={product.ProductDisplayName || product.name || 'Product'} className="w-full h-full object-cover" />
+              ) : (
+                <div className="text-xs uppercase tracking-wide text-gray-400">No image</div>
+              )}
+            </div>
+            <h3 className="font-semibold text-sm mb-2 truncate">{product.ProductDisplayName || product.name}</h3>
+            <div className="flex justify-between items-center">
+              <span className="text-xl font-bold text-blue-600">₹{product.price}</span>
+              <button onClick={() => onAddToCart(product)} className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">
+                Add
+              </button>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   </div>
 );
@@ -248,18 +264,27 @@ const GiftingStep = ({ suggestions, onAddToCart }) => (
       <Gift className="w-6 h-6" /> Perfect Gift Ideas
     </h2>
     <div className="grid grid-cols-3 gap-6">
-      {suggestions.map((product, idx) => (
-        <div key={idx} className="border-2 border-pink-200 rounded-lg p-4 hover:shadow-lg transition">
-          <div className="aspect-square bg-gradient-to-br from-pink-50 to-purple-50 rounded mb-3"></div>
-          <h3 className="font-semibold text-sm mb-2">{product.ProductDisplayName || product.name}</h3>
-          <div className="flex justify-between items-center">
-            <span className="text-xl font-bold text-pink-600">₹{product.price}</span>
-            <button onClick={() => onAddToCart(product)} className="px-3 py-1 bg-pink-600 text-white rounded hover:bg-pink-700">
-              Add
-            </button>
+      {suggestions.map((product, idx) => {
+        const imageSrc = resolveProductImage(product);
+        return (
+          <div key={idx} className="border-2 border-pink-200 rounded-lg p-4 hover:shadow-lg transition">
+            <div className="aspect-square rounded mb-3 overflow-hidden flex items-center justify-center bg-gradient-to-br from-pink-50 to-purple-50">
+              {imageSrc ? (
+                <img src={imageSrc} alt={product.ProductDisplayName || product.name || 'Gift suggestion'} className="w-full h-full object-cover" />
+              ) : (
+                <div className="text-xs uppercase tracking-wide text-pink-400">No image</div>
+              )}
+            </div>
+            <h3 className="font-semibold text-sm mb-2">{product.ProductDisplayName || product.name}</h3>
+            <div className="flex justify-between items-center">
+              <span className="text-xl font-bold text-pink-600">₹{product.price}</span>
+              <button onClick={() => onAddToCart(product)} className="px-3 py-1 bg-pink-600 text-white rounded hover:bg-pink-700">
+                Add
+              </button>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   </div>
 );

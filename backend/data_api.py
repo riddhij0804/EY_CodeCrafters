@@ -3,13 +3,16 @@ Data API - Serves all CSV data from backend/data folder
 Endpoints for products, customers, orders, stores, inventory
 """
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-import pandas as pd
-import json
 from pathlib import Path
+from typing import Dict, Any
+
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+import pandas as pd
 import uvicorn
+
+from .utils.image_resolver import enrich_with_images
 
 app = FastAPI(
     title="Data API",
@@ -29,29 +32,26 @@ app.add_middleware(
 # Data directory
 DATA_DIR = Path(__file__).parent / "data"
 
-# Mount static files for images and other assets
-if (DATA_DIR / "product_images").exists():
-    app.mount("/images", StaticFiles(directory=str(DATA_DIR / "product_images")), name="images")
+# Allowed image directories exposed via /assets endpoint
+ASSET_FOLDERS = {"product_images", "reebok_images"}
+
 
 # Load CSV files
 def load_csv(filename):
     """Load CSV file and return as list of dictionaries"""
     try:
         df = pd.read_csv(DATA_DIR / filename)
-        
-        # Normalize products CSV column names to match code expectations
-        if filename == "products.csv":
-            rename_map = {}
-            if "product_display_name" in df.columns and "ProductDisplayName" not in df.columns:
-                rename_map["product_display_name"] = "ProductDisplayName"
-            if "sub_category" in df.columns and "subcategory" not in df.columns:
-                rename_map["sub_category"] = "subcategory"
-            if rename_map:
-                df = df.rename(columns=rename_map)
-        
-        return df.to_dict('records')
+        return df.to_dict(orient="records")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error loading {filename}: {str(e)}")
+
+
+def _format_product(record: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+    enriched = dict(record)
+    enrich_with_images(enriched, base_url=base_url)
+    if enriched.get("primary_image"):
+        enriched["image_url"] = enriched["primary_image"]
+    return enriched
 
 @app.get("/")
 async def root():
@@ -60,9 +60,6 @@ async def root():
         "version": "1.0.0",
         "endpoints": [
             "GET /products",
-            "GET /products/{sku}",
-            "GET /customers",
-            "GET /customers/{customer_id}",
             "GET /orders",
             "GET /orders/{order_id}",
             "GET /stores",
@@ -70,35 +67,44 @@ async def root():
         ]
     }
 
+@app.get("/assets/{image_path:path}")
+async def serve_product_image(image_path: str):
+    """Serve product imagery from the data folder with path sanitisation."""
+    safe_path = Path(image_path)
+
+    root_folder = safe_path.parts[0]
+    if root_folder not in ASSET_FOLDERS:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    target_path = (DATA_DIR / safe_path).resolve()
+    allowed_base = (DATA_DIR / root_folder).resolve()
+
+    if not str(target_path).startswith(str(allowed_base)) or not target_path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return FileResponse(target_path)
+
+
 @app.get("/products")
 async def get_products(
-    limit: int = Query(default=20, le=5000),
-    category: str = None,
-    brand: str = None,
-    min_price: float = None,
-    max_price: float = None
+    request: Request,
+    limit: int = Query(default=20, le=100),
+    category: str = None
 ):
-    """Get all products with optional filters"""
+    """Get all products with optional category filter"""
     products = load_csv("products.csv")
-    
-    # Apply filters
     if category:
-        products = [p for p in products if p.get('category', '').lower() == category.lower()]
-    if brand:
-        products = [p for p in products if p.get('brand', '').lower() == brand.lower()]
-    if min_price:
-        products = [p for p in products if p.get('price', 0) >= min_price]
-    if max_price:
-        products = [p for p in products if p.get('price', 0) <= max_price]
-    
+        products = [p for p in products if p.get("category", "").lower() == category.lower()]
+    base_url = str(request.base_url).rstrip("/")
+    formatted = [_format_product(p, base_url) for p in products[:limit]]
     return {
         "total": len(products),
         "limit": limit,
-        "products": products[:limit]
+        "products": formatted
     }
 
 @app.get("/products/{sku}")
-async def get_product(sku: str):
+async def get_product(request: Request, sku: str):
     """Get specific product by SKU"""
     products = load_csv("products.csv")
     product = next((p for p in products if p['sku'] == sku), None)
@@ -106,7 +112,8 @@ async def get_product(sku: str):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    return product
+    base_url = str(request.base_url).rstrip("/")
+    return _format_product(product, base_url)
 
 @app.get("/customers")
 async def get_customers(limit: int = Query(default=20, le=100)):

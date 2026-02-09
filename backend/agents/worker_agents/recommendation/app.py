@@ -16,6 +16,19 @@ import logging
 import os
 from dotenv import load_dotenv
 
+# Image resolver for local assets
+try:
+    from ...utils.image_resolver import resolve_image_reference
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    _project_root = Path(__file__).resolve().parents[4]
+    if str(_project_root) not in sys.path:
+        sys.path.append(str(_project_root))
+
+    from backend.utils.image_resolver import resolve_image_reference  # type: ignore
+
 # LLM imports
 try:
     import google.genai as genai
@@ -38,6 +51,13 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+ASSET_BASE_URL = os.getenv("DATA_ASSET_BASE_URL", "http://localhost:8007")
+
+
+def _resolved_image(value: Any) -> str:
+    link = resolve_image_reference(value, base_url=ASSET_BASE_URL)
+    return link or ""
 
 # Initialize LLM
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" or "groq"
@@ -138,7 +158,8 @@ def load_data_with_supabase_fallback():
     orders_df = None
     
     try:
-        from db.repositories import products_repo, customers_repo, inventory_repo
+        from db.repositories import products_repo, inventory_repo
+        from db.repositories.customer_repo import get_all_customers
         
         # Try Supabase for products
         products_df = products_repo.get_all_products()
@@ -146,7 +167,7 @@ def load_data_with_supabase_fallback():
             logger.info(f"✅ Loaded {len(products_df)} products from Supabase")
         
         # Try Supabase for customers
-        customers_df = customers_repo.get_all_customers()
+        customers_df = get_all_customers()
         if customers_df is not None:
             logger.info(f"✅ Loaded {len(customers_df)} customers from Supabase")
         
@@ -747,6 +768,7 @@ def get_upsell_product(
         'price': float(upsell['price']),
         'rating': float(upsell['ratings']),
         'in_stock': get_inventory_availability(upsell['sku']),
+        'image_url': _resolved_image(upsell.get('image_url')),
         'personalized_reason': generate_personalized_reason(
             upsell, customer_profile, past_skus, context="upsell", angle=angle
         )
@@ -815,6 +837,7 @@ def get_cross_sell_product(
         'price': float(cross_sell['price']),
         'rating': float(cross_sell['ratings']),
         'in_stock': get_inventory_availability(cross_sell['sku']),
+        'image_url': _resolved_image(cross_sell.get('image_url')),
         'personalized_reason': generate_personalized_reason(
             cross_sell, customer_profile, past_skus, context="cross_sell", angle=angle
         )
@@ -873,6 +896,7 @@ async def _mode_normal(request: RecommendationRequest, customer_profile: Dict, p
             'price': float(product['price']),
             'rating': float(product['ratings']),
             'in_stock': True,
+            'image_url': _resolved_image(product.get('image_url')),
             'personalized_reason': reason
         })
     
@@ -1122,6 +1146,7 @@ Write a genuine, emotional message that the giver would write on a gift card. Be
             'price': float(product['price']),
             'rating': float(product['ratings']),
             'in_stock': True,
+            'image_url': _resolved_image(product.get('image_url')),
             'personalized_reason': gift_reason,
             'gift_message': gift_message,
             'gift_suitability': suitability
@@ -1304,6 +1329,7 @@ Explain why they'll likely need this next based on their style. Be specific and 
             'price': float(product['price']),
             'rating': float(product['ratings']),
             'in_stock': True,
+            'image_url': _resolved_image(product.get('image_url')),
             'personalized_reason': predictive_reason,
             'trend_capsule': True
         })

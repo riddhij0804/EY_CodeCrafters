@@ -8,6 +8,17 @@ import sessionStore from '../lib/session';
 const SESSION_API = API_ENDPOINTS.SESSION_MANAGER;
 const SALES_API = API_ENDPOINTS.SALES_AGENT;
 
+const resolveCardImage = (card) => {
+  if (!card) return null;
+  if (card.image) return toAssetUrl(card.image);
+  if (card.primary_image) return toAssetUrl(card.primary_image);
+  if (card.image_url) return toAssetUrl(card.image_url);
+  if (Array.isArray(card.image_urls) && card.image_urls.length > 0) {
+    return toAssetUrl(card.image_urls[0]);
+  }
+  return null;
+};
+
 const KioskChat = () => {
   const navigate = useNavigate();
 
@@ -61,16 +72,6 @@ const KioskChat = () => {
     } catch (error) {
       console.error('Failed to fetch loyalty info:', error);
       setLoyaltyPoints(0);
-      setLoyaltyTier('Bronze');
-    }
-  };
-
-  // Featured product visibility
-  const [showFeatured, setShowFeatured] = useState(true);
-
-  const findFeaturedCard = () => {
-    // Prefer latest message cards from in-memory messages
-    for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m?.cards && m.cards.length > 0) return m.cards[0];
     }
@@ -88,6 +89,7 @@ const KioskChat = () => {
   const FeaturedProductBlock = ({ messages: _msgs, sessionInfo: _session }) => {
     const card = findFeaturedCard();
     if (!card || !showFeatured) return null;
+    const featuredImage = resolveCardImage(card);
 
     return (
       <div className="mb-6 px-4">
@@ -97,51 +99,45 @@ const KioskChat = () => {
           </button>
           <p className="text-sm font-semibold text-gray-600 mb-3">FEATURED PRODUCT</p>
           <div className="flex gap-4 items-center">
-            {card.image ? (
-              <img src={card.image} alt={card.name} className="w-28 h-28 object-cover rounded-lg" onError={(e)=>e.target.style.display='none'} />
+            {featuredImage ? (
+              <img src={featuredImage} alt={card.name} className="w-28 h-28 object-cover rounded-lg" onError={(e)=>e.target.style.display='none'} />
             ) : (
               <div className="w-28 h-28 bg-gradient-to-br from-gray-100 to-gray-200 rounded-lg flex items-center justify-center">
                 <ShoppingBag className="w-10 h-10 text-gray-400" />
               </div>
             )}
-
             <div className="flex-1">
-              <h3 className="font-bold text-lg text-gray-800 mb-1">{card.name}</h3>
-              {card.sku && <p className="text-sm text-gray-600 mb-1">{card.sku}</p>}
-              {card.price && <p className="text-2xl font-bold bg-gradient-to-r from-[#8B1538] to-[#D4AF37] bg-clip-text text-transparent mb-3">₹{card.price}</p>}
-              <div className="text-xs text-gray-600">
-                {card.personalized_reason ? (
-                  <>
-                    {card.personalized_reason.length > 120 && !expandedCards.has('featured')
-                      ? `${card.personalized_reason.slice(0,110)}... `
-                      : card.personalized_reason}
-                    {card.personalized_reason.length > 120 && (
-                      <button
-                        onClick={() => toggleExpandCard('featured')}
-                        className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
-                      >
-                        {expandedCards.has('featured') ? 'Show less' : 'Show more'}
-                      </button>
-                    )}
-                  </>
-                ) : card.description ? (
-                  <>
-                    {card.description.length > 120 && !expandedCards.has('featured')
-                      ? `${card.description.slice(0,110)}... `
-                      : card.description}
-                    {card.description.length > 120 && (
-                      <button
-                        onClick={() => toggleExpandCard('featured')}
-                        className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
-                      >
-                        {expandedCards.has('featured') ? 'Show less' : 'Show more'}
-                      </button>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-gray-400">Top trending for you</span>
-                )}
-              </div>
+              {card.personalized_reason ? (
+                <>
+                  {card.personalized_reason.length > 120 && !expandedCards.has('featured')
+                    ? `${card.personalized_reason.slice(0,110)}... `
+                    : card.personalized_reason}
+                  {card.personalized_reason.length > 120 && (
+                    <button
+                      onClick={() => toggleExpandCard('featured')}
+                      className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
+                    >
+                      {expandedCards.has('featured') ? 'Show less' : 'Show more'}
+                    </button>
+                  )}
+                </>
+              ) : card.description ? (
+                <>
+                  {card.description.length > 120 && !expandedCards.has('featured')
+                    ? `${card.description.slice(0,110)}... `
+                    : card.description}
+                  {card.description.length > 120 && (
+                    <button
+                      onClick={() => toggleExpandCard('featured')}
+                      className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
+                    >
+                      {expandedCards.has('featured') ? 'Show less' : 'Show more'}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <span className="text-gray-400">Top trending for you</span>
+              )}
             </div>
           </div>
         </div>
@@ -662,13 +658,15 @@ const KioskChat = () => {
                 {/* Product cards (if any) */}
                 {message.cards && message.cards.length > 0 && (
                   <div className="mt-3 space-y-3">
-                    {message.cards.map((card, idx) => (
-                      <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                        <div className="flex gap-3">
-                          {card.image && (
-                            <img src={card.image} alt={card.name} className="w-20 h-20 object-cover rounded" onError={(e)=>e.target.style.display='none'} />
-                          )}
-                          <div className="flex-1">
+                    {message.cards.map((card, idx) => {
+                      const cardImage = resolveCardImage(card);
+                      return (
+                        <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                          <div className="flex gap-3">
+                            {cardImage && (
+                              <img src={cardImage} alt={card.name} className="w-20 h-20 object-cover rounded" onError={(e)=>e.target.style.display='none'} />
+                            )}
+                            <div className="flex-1">
                             <h4 className="font-semibold text-sm text-gray-900">{card.name}</h4>
                             <p className="text-xs text-gray-600 mt-1">{card.sku}</p>
                             {card.price && (<p className="text-sm font-bold text-green-600 mt-1">₹{card.price}</p>)}
@@ -743,7 +741,8 @@ const KioskChat = () => {
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 

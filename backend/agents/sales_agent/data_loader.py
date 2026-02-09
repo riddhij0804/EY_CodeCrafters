@@ -9,7 +9,11 @@ from typing import Dict, List, Optional
 from datetime import datetime
 import logging
 
+    # ...existing code...
+
 logger = logging.getLogger(__name__)
+
+    # ...existing code...
 
 
 class CSVDataLoader:
@@ -178,7 +182,7 @@ class CSVDataLoader:
                     except:
                         attributes = {}
                 
-                self.products[sku] = {
+                record = {
                     'sku': sku,
                     'name': row['ProductDisplayName'],
                     'brand': row['brand'],
@@ -190,10 +194,10 @@ class CSVDataLoader:
                     'msrp': float(row['msrp']),
                     'currency': row['currency'],
                     'attributes': attributes,
-                    'image_url': row['image_url'],
                     'ratings': float(row['ratings']),
                     'review_count': int(row['review count'])
                 }
+                self.products[sku] = record
         
         logger.info(f"Loaded {len(self.products)} products")
     
