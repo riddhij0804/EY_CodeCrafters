@@ -255,10 +255,14 @@ export const salesAgentService = {
       const params = new URLSearchParams();
       
       if (filters.limit) params.append('limit', filters.limit);
+      if (filters.offset) params.append('offset', filters.offset);
       if (filters.category) params.append('category', filters.category);
+      if (filters.subcategory) params.append('subcategory', filters.subcategory);
+      if (filters.gender) params.append('gender', filters.gender);
       if (filters.brand) params.append('brand', filters.brand);
       if (filters.min_price) params.append('min_price', filters.min_price);
       if (filters.max_price) params.append('max_price', filters.max_price);
+      if (filters.min_rating) params.append('min_rating', filters.min_rating);
 
       const url = `${API_ENDPOINTS.DATA_PRODUCTS}${params.toString() ? '?' + params : ''}`;
       return await apiCall(url);

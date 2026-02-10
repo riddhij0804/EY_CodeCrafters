@@ -11,16 +11,16 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,
+    port: 5173,
     proxy: {
       // Proxy API calls to backend during development
       '/api': {
-        target: 'http://localhost:4000',
+        target: 'http://localhost:8007',
         changeOrigin: true,
         secure: false
       },
       '/health': {
-        target: 'http://localhost:4000',
+        target: 'http://localhost:8007',
         changeOrigin: true,
         secure: false
       }
