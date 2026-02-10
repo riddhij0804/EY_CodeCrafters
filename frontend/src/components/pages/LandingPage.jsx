@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Search,
   ShoppingCart,
@@ -12,14 +12,20 @@ import {
   User,
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { useCart } from "@/contexts/CartContext.jsx";
+import { salesAgentService } from "@/services/salesAgentService.js";
 import heroModel from "../../assets/model.png";
 import sessionStore from "../../lib/session";
 
 const LandingPage = () => {
+  const navigate = useNavigate();
+  const { getCartCount, addToCart } = useCart();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [customerProfile, setCustomerProfile] = useState(() => sessionStore.getProfile());
   const [customerPhone, setCustomerPhone] = useState(() => sessionStore.getPhone());
+  const [featuredProducts, setFeaturedProducts] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
   const profileButtonRef = useRef(null);
   const profileMenuRef = useRef(null);
 
@@ -58,6 +64,24 @@ const LandingPage = () => {
     document.addEventListener("mousedown", handleClickAway);
     return () => document.removeEventListener("mousedown", handleClickAway);
   }, [profileMenuOpen]);
+
+  useEffect(() => {
+    const fetchFeaturedProducts = async () => {
+      try {
+        setLoadingProducts(true);
+        const response = await salesAgentService.getProducts({ limit: 6 });
+        const products = response.products || [];
+        setFeaturedProducts(products.slice(0, 6));
+      } catch (error) {
+        console.error("Error fetching featured products:", error);
+        setFeaturedProducts([]);
+      } finally {
+        setLoadingProducts(false);
+      }
+    };
+
+    fetchFeaturedProducts();
+  }, []);
 
   const profile = customerProfile && Object.keys(customerProfile).length > 0 ? customerProfile : null;
   const customerId = profile?.customer_id || profile?.customerId || "--";
@@ -108,12 +132,12 @@ const LandingPage = () => {
                 >
                   FEATURES
                 </a>
-                <a
-                  href="#products"
-                  className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider"
+                <button
+                  onClick={() => navigate('/products')}
+                  className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider cursor-pointer"
                 >
                   PRODUCTS
-                </a>
+                </button>
                 <a
                   href="#contact"
                   className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider"
@@ -142,11 +166,17 @@ const LandingPage = () => {
                   SIGN IN
                 </Link>
               )}
-              <button className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors" aria-label="Shopping cart">
+              <button 
+                onClick={() => navigate('/cart')}
+                className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors" 
+                aria-label="Shopping cart"
+              >
                 <ShoppingCart className="w-5 h-5" />
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 text-red-700 text-xs rounded-full flex items-center justify-center">
-                  0
-                </span>
+                {getCartCount() > 0 && (
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-yellow-400 text-red-700 text-xs rounded-full flex items-center justify-center font-semibold">
+                    {getCartCount()}
+                  </span>
+                )}
               </button>
 
               {profile && profileMenuOpen && (
@@ -248,6 +278,19 @@ const LandingPage = () => {
               >
                 CONTACT
               </motion.a>
+              <motion.button
+                initial={{ x: -20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                transition={{ delay: 0.28 }}
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  navigate('/cart');
+                }}
+                className="flex items-center gap-2 text-sm font-medium text-yellow-100 hover:text-yellow-200 transition-colors w-full"
+              >
+                <ShoppingCart className="w-5 h-5" />
+                <span>CART ({getCartCount()})</span>
+              </motion.button>
               <motion.div
                 initial={{ x: -20, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
@@ -518,10 +561,10 @@ const LandingPage = () => {
             className="text-center max-w-4xl mx-auto"
           >
             <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold mb-4 sm:mb-6">
-              Spring Collection 2025
+              Spring Collection 2026
             </h2>
             <p className="text-lg sm:text-xl text-yellow-100 mb-3 sm:mb-4">
-              SALE WEEKEND • MAY 12-14
+              SALE WEEKEND • FEB 28-MAR 1
             </p>
             <p className="text-base sm:text-lg text-yellow-50 mb-8 sm:mb-10 max-w-2xl mx-auto">
               Get up to 40% off on selected items from our latest collection.
@@ -573,51 +616,102 @@ const LandingPage = () => {
           </motion.div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 lg:gap-8">
-            {[1, 2, 3, 4, 5, 6].map((item) => (
-              <motion.div
-                key={item}
-                initial={{ opacity: 0, y: 50 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, amount: 0.2 }}
-                transition={{ duration: 0.5, delay: (item - 1) * 0.1 }}
-                whileHover={{ y: -5, scale: 1.02 }}
-                className="group cursor-pointer bg-white rounded-lg overflow-hidden shadow-lg hover:shadow-xl transition-shadow"
-              >
-                <div className="relative h-72 sm:h-80 lg:h-96 bg-gradient-to-br from-red-200 to-orange-200 overflow-hidden">
-                  <motion.div
-                    whileHover={{ scale: 1.05 }}
-                    transition={{ duration: 0.5 }}
-                    className="absolute inset-0 bg-gradient-to-br from-red-300 to-yellow-400 flex items-center justify-center"
-                  >
-                    <p className="text-red-900 text-sm">Product Image {item}</p>
-                  </motion.div>
+            {loadingProducts ? (
+              <div className="col-span-full flex items-center justify-center py-16">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-red-600 mx-auto mb-4"></div>
+                  <p className="text-gray-600">Loading featured products...</p>
                 </div>
-                <div className="p-4 sm:p-6">
-                  <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-2">
-                    Premium Product Name
-                  </h3>
-                  <p className="text-sm text-gray-600 mb-4">
-                    Brief product description goes here
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <span className="text-lg sm:text-xl font-bold text-gray-900">
-                      $299
-                    </span>
-                    <motion.button
+              </div>
+            ) : featuredProducts.length === 0 ? (
+              <div className="col-span-full text-center py-16">
+                <p className="text-gray-500">No products available at the moment</p>
+              </div>
+            ) : (
+              featuredProducts.map((product, index) => (
+                <motion.div
+                  key={product.sku}
+                  initial={{ opacity: 0, y: 50 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true, amount: 0.2 }}
+                  transition={{ duration: 0.5, delay: index * 0.1 }}
+                  whileHover={{ y: -5, scale: 1.02 }}
+                  onClick={() => navigate(`/products/${product.sku}`)}
+                  className="group cursor-pointer bg-white rounded-lg overflow-hidden shadow-lg hover:shadow-xl transition-shadow"
+                >
+                  <div className="relative h-72 sm:h-80 lg:h-96 bg-gradient-to-br from-red-200 to-orange-200 overflow-hidden">
+                    <motion.img
                       whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className="px-3 sm:px-4 py-2 bg-red-700 text-white text-xs sm:text-sm font-medium hover:bg-red-800 transition-colors"
-                    >
-                      ADD TO CART
-                    </motion.button>
+                      transition={{ duration: 0.5 }}
+                      src={`http://localhost:8007/images/${product.image_url.split('/').pop()}`}
+                      alt={product.product_display_name}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                      }}
+                    />
+                    {/* Fallback gradient if image fails */}
+                    <div className="absolute inset-0 bg-gradient-to-br from-red-300 to-yellow-400 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <p className="text-red-900 text-sm">View Product</p>
+                    </div>
                   </div>
-                </div>
-              </motion.div>
-            ))}
+                  <div className="p-4 sm:p-6">
+                    <p className="text-xs text-red-600 font-medium uppercase mb-1">
+                      {product.category}
+                    </p>
+                    <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-2 line-clamp-2">
+                      {product.product_display_name}
+                    </h3>
+                    <p className="text-xs text-gray-500 mb-3">{product.brand}</p>
+                    {product.ratings && (
+                      <div className="flex items-center gap-2 mb-4">
+                        <div className="flex">
+                          {[...Array(Math.floor(parseFloat(product.ratings) || 0))].map((_, i) => (
+                            <span key={i} className="text-yellow-400 text-xs">★</span>
+                          ))}
+                        </div>
+                        <span className="text-xs text-gray-600">
+                          {product.ratings} ({product.review_count || 0} reviews)
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg sm:text-xl font-bold text-gray-900">
+                          ₹{Math.floor(parseFloat(product.price) || 0)}
+                        </span>
+                        {product.msrp && parseFloat(product.msrp) > parseFloat(product.price) && (
+                          <span className="text-xs text-gray-500 line-through">
+                            ₹{Math.floor(parseFloat(product.msrp))}
+                          </span>
+                        )}
+                      </div>
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          addToCart({
+                            sku: product.sku,
+                            name: product.product_display_name,
+                            price: parseFloat(product.price),
+                            quantity: 1,
+                            image: product.image_url
+                          });
+                        }}
+                        className="px-3 sm:px-4 py-2 bg-red-700 text-white text-xs sm:text-sm font-medium hover:bg-red-800 transition-colors"
+                      >
+                        ADD TO CART
+                      </motion.button>
+                    </div>
+                  </div>
+                </motion.div>
+              ))
+            )}
           </div>
 
           <div className="text-center mt-10 sm:mt-12">
-            <Link to="/kiosk">
+            <Link to="/products">
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
@@ -855,7 +949,7 @@ const LandingPage = () => {
           <div className="pt-6 sm:pt-8 border-t border-red-700">
             <div className="flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
               <p className="text-yellow-100 text-sm sm:text-base">
-                &copy; 2024 EDGE Lifestyle. All rights reserved.
+                &copy; 2026 EDGE Lifestyle. All rights reserved.
               </p>
               <div className="flex space-x-6">
                 <a

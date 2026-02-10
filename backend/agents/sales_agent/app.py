@@ -13,6 +13,7 @@ import os
 import uuid
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Request, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +22,10 @@ import requests
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 import uvicorn
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv(Path(__file__).parent / '.env')
 
 # Import LangGraph Sales Agent (absolute import for direct uvicorn execution)
 from sales_graph import process_message as process_with_langgraph
@@ -78,6 +82,28 @@ class AgentResponse(BaseModel):
     metadata: dict = Field(default_factory=dict, description="Additional response metadata")
     intent_info: Optional[dict] = Field(None, description="Intent detection information")
     cards: List[dict] = Field(default_factory=list, description="Product cards or visual elements")
+
+
+class PostPaymentRequest(BaseModel):
+    """Request model for post-payment processing after successful Razorpay payment."""
+    order_id: str = Field(..., description="Order ID that was successfully paid")
+    customer_id: str = Field(..., description="Customer ID who made the payment")
+    session_token: str = Field(..., description="Session token for conversation continuity")
+    amount_paid: float = Field(..., description="Amount that was successfully paid")
+    payment_id: str = Field(..., description="Razorpay payment ID")
+    transaction_id: Optional[str] = Field(None, description="Transaction ID from payment agent")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "order_id": "ORD000961",
+                "customer_id": "user_001",
+                "session_token": "abc123-def456",
+                "amount_paid": 2999.00,
+                "payment_id": "pay_1234567890",
+                "transaction_id": "txn_1234567890"
+            }
+        }
 
 
 # ============================================================================
@@ -262,6 +288,86 @@ async def handle_checkout(request: CheckoutRequest):
                 "status": "error",
                 "error": str(e),
                 "message": "Failed to process checkout"
+            }
+        )
+
+
+@app.post("/api/post-payment")
+async def handle_post_payment(request: PostPaymentRequest):
+    """
+    Handle post-payment processing after successful Razorpay payment verification.
+
+    This endpoint is called by the frontend after successful payment verification
+    to trigger the full post-payment agent workflow:
+    1. Start fulfillment processing
+    2. Notify post-purchase agent
+    3. Trigger stylist analysis
+    4. Update inventory
+
+    Args:
+        request: PostPaymentRequest with verified payment details
+
+    Returns:
+        Processing status and agent responses
+    """
+    logger.info(f"💰 Post-payment processing for order: {request.order_id}")
+
+    try:
+        # Create a mock state for the fulfillment worker
+        from sales_graph import SalesAgentState
+
+        state = SalesAgentState(
+            message=f"Payment completed for order {request.order_id}",
+            session_token=request.session_token,
+            metadata={
+                "order_id": request.order_id,
+                "customer_id": request.customer_id,
+                "source": "post_payment",
+                "action": "start_processing",
+                "trigger_agents": ["fulfillment", "post_purchase", "stylist", "inventory"],
+                "amount_paid": request.amount_paid,
+                "payment_id": request.payment_id,
+                "transaction_id": request.transaction_id
+            },
+            intent="support",  # Routes to fulfillment_worker
+            confidence=1.0,
+            entities={
+                "order_id": request.order_id,
+                "customer_id": request.customer_id,
+                "source": "post_payment",
+                "action": "start_processing",
+                "trigger_agents": ["fulfillment", "post_purchase", "stylist", "inventory"]
+            },
+            intent_method="post_payment_trigger",
+            response="",
+            cards=[],
+            worker_service="",
+            worker_url="",
+            error=""
+        )
+
+        # Import and call the fulfillment worker directly
+        from sales_graph import call_fulfillment_worker
+        result_state = await call_fulfillment_worker(state)
+
+        logger.info(f"✅ Post-payment processing completed for order {request.order_id}")
+
+        return {
+            "status": "success",
+            "order_id": request.order_id,
+            "message": result_state.response,
+            "processing_started": True,
+            "agents_triggered": ["fulfillment", "post_purchase", "stylist", "inventory"]
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Post-payment processing failed: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "error": str(e),
+                "message": "Failed to process post-payment workflow"
             }
         )
 

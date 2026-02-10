@@ -7,15 +7,13 @@ import pandas as pd
 from typing import Optional, List, Dict, Any
 from ..supabase_client import select, is_enabled
 
-# Column mapping: Supabase snake_case -> CSV PascalCase/original names
+# Column mapping: Supabase snake_case -> Code expectations for normalized CSV
+# Maps from Supabase column names to what the code expects after CSV loads
 COLUMN_MAPPING = {
     "product_display_name": "ProductDisplayName",
-    "review_count": "review count",
-    "article_type": "articleType",
-    "base_colour": "baseColour",
-    "master_category": "masterCategory",
-    "sub_category": "subCategory",
-    "gender_article_type": "genderArticleType",
+    "sub_category": "subcategory",
+    "review_count": "review_count",  # Keep as is - code expects review_count
+    # Note: 'category' and other fields exist as-is in new CSV schema, no mapping needed
 }
 
 

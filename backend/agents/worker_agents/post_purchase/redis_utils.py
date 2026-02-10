@@ -45,6 +45,12 @@ PRODUCTS_CSV = os.path.join(os.path.dirname(__file__), "../../../data/products.c
 orders_df = pd.read_csv(ORDERS_CSV)
 products_df = pd.read_csv(PRODUCTS_CSV)
 
+# Normalize column names for new CSV schema
+if "product_display_name" in products_df.columns and "ProductDisplayName" not in products_df.columns:
+    products_df = products_df.rename(columns={"product_display_name": "ProductDisplayName"})
+if "sub_category" in products_df.columns and "subcategory" not in products_df.columns:
+    products_df = products_df.rename(columns={"sub_category": "subcategory"})
+
 
 def _get_dynamic_order(order_id: str) -> Optional[Dict]:
     """Fetch dynamically registered order from Redis."""

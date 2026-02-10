@@ -350,6 +350,4 @@ customer_id,name,age,gender,phone_number,city,loyalty_tier,loyalty_points,device
 449,Aditya Joshi,34,Male,9000000348,Ludhiana,Bronze,356,mobile,3140.0,1,4.2,21,Neutral,"[{'order_id': 'ORD000093', 'sku': 'SKU000414', 'qty': 2, 'amount': 3140.0, 'date': '2025-12-01', 'rating': 4.6}]"
 450,Aanya Joshi,43,Female,9000000349,Bhopal,Bronze,76,mobile,6720.0,3,3.3,49,Unsatisfied,"[{'order_id': 'ORD000127', 'sku': 'SKU000768', 'qty': 2, 'amount': 3180.0, 'date': '2025-11-27', 'rating': 4.0}, {'order_id': 'ORD000127', 'sku': 'SKU000593', 'qty': 1, 'amount': 1740.0, 'date': '2025-11-27', 'rating': 4.2}, {'order_id': 'ORD000680', 'sku': 'SKU000668', 'qty': 2, 'amount': 1800.0, 'date': '2025-11-18', 'rating': 4.6}]"
 451,Hanishka Kataria,23,Female,8788163736,Ulhasnagar,Bronze,0,mobile,0,0,0,,New,[]
-452,Bhoomika,19,Female,1234567890,Mumbai,Bronze,0,mobile,0,0,0,,New,[]
-453,Neha,,Female,9324235263,Delhi,Bronze,0,mobile,0,0,0,,New,[]
-454,Aarya,,Female,1234567891,mumbai,Bronze,0,mobile,0,0,0,,New,[]
+452,Neha Wadhwa,19,Female,1234567890,mumbai,Bronze,0,mobile,0,0,0,,New,[]

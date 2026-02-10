@@ -18,6 +18,7 @@ export const API_ENDPOINTS = {
   RECOMMENDATIONS: `${API_BASE_URL}:8010/api/recommendations`,
   GIFT_SUGGESTIONS: `${API_BASE_URL}:8010/api/gift-suggestions`,
   CHECKOUT: `${API_BASE_URL}:8010/api/checkout`,
+  POST_PAYMENT: `${API_BASE_URL}:8010/api/post-payment`,
   VERIFY_INVENTORY: `${API_BASE_URL}:8010/api/verify-inventory`,
   SEASONAL_TRENDS: `${API_BASE_URL}:8010/api/seasonal-trends`,
 

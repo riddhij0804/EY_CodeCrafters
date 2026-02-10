@@ -1,6 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+<<<<<<< HEAD
 import { Send, Check, CheckCheck, Phone, Video, Mic, MicOff, User, X, CreditCard, LifeBuoy, CheckCircle, ImagePlus } from 'lucide-react';
+=======
+import { Send, Check, CheckCheck, Phone, Video, Mic, MicOff, User, X, CreditCard, LifeBuoy, CheckCircle, ShoppingCart } from 'lucide-react';
+import { useCart } from '@/contexts/CartContext.jsx';
+>>>>>>> d15733c1613079033a04f7c26aba13d9e2bb43fe
 import { createRazorpayOrder, verifyRazorpayPayment, getNextOrderId } from '../services/paymentService';
 import { getTierInfo } from '../services/loyaltyService';
 import { setDeliveryWindow } from '../services/fulfillmentService';
@@ -105,6 +110,8 @@ const SUPPORT_TITLES = {
 
 const Chat = () => {
   const navigate = useNavigate();
+  const { addToCart, clearCart, cartItems } = useCart();
+  const [toast, setToast] = useState({ show: false, message: '' });
 
   // Session state
   const [sessionInfo, setSessionInfo] = useState(null);
@@ -613,19 +620,12 @@ const Chat = () => {
             return;
           }
 
-          const images = Array.isArray(supportForm.images)
-            ? supportForm.images
-            : (supportForm.images
-              ? supportForm.images.split(',').map((img) => img.trim()).filter(Boolean)
-              : []);
-
           result = await initiateReturn({
             user_id: supportForm.user_id,
             order_id: supportForm.order_id,
             product_sku: supportForm.product_sku,
             reason_code: supportForm.reason_code,
             additional_comments: supportForm.additional_comments || '',
-            images,
           });
 
           summaryText = `📦 Return ${result.return_id} created for order ${supportForm.order_id}. Pickup ${result.pickup_date || 'will be scheduled soon'} and refund will trigger after inspection.`;
@@ -1633,45 +1633,47 @@ const Chat = () => {
     }
   };
 
-  const handleBuyNow = async (card) => {
-    if (!sessionToken) {
-      alert('Start the chat session before selecting a product.');
+  const showToast = (message) => {
+    setToast({ show: true, message });
+    setTimeout(() => setToast({ show: false, message: '' }), 3000);
+  };
+
+  const handleAddToCart = (card) => {
+    const price = parsePriceToNumber(card.price ?? card.rawPrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      showToast('Unable to add item: price information missing');
       return;
     }
 
-    const normalizedPrice = parsePriceToNumber(card.price);
-    if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) {
-      alert('Price information is not available for this product yet. Please ask the agent for pricing details.');
+    addToCart({
+      sku: card.sku,
+      name: card.name,
+      unit_price: price,
+      qty: 1,
+      image: card.image,
+    });
+    showToast(`${card.name} added to cart!`);
+  };
+
+  const handleBuyNow = (card) => {
+    const price = parsePriceToNumber(card.price ?? card.rawPrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      showToast('Unable to purchase: price information missing');
       return;
     }
 
-    const selection = {
-      sku: card.sku || '',
-      name: card.name || 'Selected product',
-      price: normalizedPrice,
-      rawPrice: card.price,
-      image: card.image || '',
-      brand: card.brand || '',
-      category: card.category || extractCardAttribute(card, 'category') || '',
-      color: extractCardAttribute(card, 'color') || card.color || '',
-      material: extractCardAttribute(card, 'material') || '',
-      productType: card.product_type || extractCardAttribute(card, 'product_type') || extractCardAttribute(card, 'type') || '',
-      description: card.description || '',
-      quantity: 1,
-    };
-
-    setPendingCheckoutItem(selection);
-    setAwaitingConfirmation(false);
-
-    await storeSelectedItemInSession({
-      sku: selection.sku,
-      name: selection.name,
-      price: selection.price,
-      quantity: selection.quantity,
+    // Clear cart and add this single item
+    clearCart();
+    addToCart({
+      sku: card.sku,
+      name: card.name,
+      unit_price: price,
+      qty: 1,
+      image: card.image,
     });
 
-    const autoText = `I want to buy ${selection.name}${selection.sku ? ` (SKU ${selection.sku})` : ''}.`;
-    await sendMessageToAgent(autoText);
+    // Navigate to checkout
+    navigate('/checkout');
   };
 
   const handleKeyPress = (e) => {
@@ -1896,6 +1898,18 @@ const Chat = () => {
           >
             <LifeBuoy className="w-5 h-5" />
           </button>
+          <button
+            onClick={() => navigate('/cart')}
+            className="relative hover:bg-[#017561] p-2 rounded-full transition-colors"
+            title="View Cart"
+          >
+            <ShoppingCart className="w-5 h-5" />
+            {cartItems.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 text-red-700 text-[10px] rounded-full flex items-center justify-center font-bold">
+                {cartItems.reduce((sum, item) => sum + item.qty, 0)}
+              </span>
+            )}
+          </button>
           <button className="hover:bg-[#017561] p-2 rounded-full transition-colors">
             <Phone className="w-5 h-5" />
           </button>
@@ -2000,14 +2014,7 @@ const Chat = () => {
                   {message.cards.map((card, idx) => (
                     <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors">
                       <div className="flex gap-3">
-                        {card.image && (
-                          <img 
-                            src={card.image} 
-                            alt={card.name} 
-                            className="w-16 h-16 object-cover rounded"
-                            onError={(e) => e.target.style.display = 'none'}
-                          />
-                        )}
+                        {/* image display removed */}
                         <div className="flex-1">
                           <h4 className="font-semibold text-sm text-gray-900">{card.name}</h4>
                           <p className="text-xs text-gray-600 mt-1">{card.sku}</p>
@@ -2087,15 +2094,22 @@ const Chat = () => {
                             </div>
                           )}
                           
-                          {/* Purchase Button */}
-                          <div className="mt-3 flex justify-end">
+                          {/* Purchase Buttons */}
+                          <div className="mt-3 flex justify-end gap-2">
                             <button
-                              onClick={() => handleProductPurchase(card)}
+                              onClick={() => handleAddToCart(card)}
+                              className="bg-orange-500 hover:bg-orange-600 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors flex items-center gap-1"
+                            >
+                              <ShoppingCart className="w-3 h-3" />
+                              Add to Cart
+                            </button>
+                            <button
+                              onClick={() => handleBuyNow(card)}
                               disabled={isPaymentProcessing}
                               className="bg-[#00796b] hover:bg-[#00695c] disabled:bg-gray-400 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors flex items-center gap-1"
                             >
                               <CreditCard className="w-3 h-3" />
-                              {isPaymentProcessing ? 'Processing...' : 'Buy Now'}
+                              Buy Now
                             </button>
                           </div>
                         </div>
@@ -2487,15 +2501,7 @@ const Chat = () => {
                           placeholder="Share any details for the pickup team"
                         />
                       </label>
-                      <label className="block text-xs font-medium text-gray-600 uppercase">Image URLs (optional)
-                        <textarea
-                          value={supportForm.images || ''}
-                          onChange={(e) => updateSupportForm('images', e.target.value)}
-                          className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none"
-                          rows={2}
-                          placeholder="Comma separated URLs"
-                        />
-                      </label>
+                      {/* Image URLs input removed */}
                     </div>
                   )}
 
@@ -2784,6 +2790,16 @@ const Chat = () => {
                 </p>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast.show && (
+        <div className="fixed bottom-24 left-1/2 transform -translate-x-1/2 z-50 animate-fade-in-up">
+          <div className="bg-gray-900 text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-2">
+            <CheckCircle className="w-5 h-5 text-green-400" />
+            <span className="font-medium">{toast.message}</span>
           </div>
         </div>
       )}

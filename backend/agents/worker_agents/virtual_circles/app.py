@@ -276,6 +276,12 @@ async def load_data():
         customers_df = pd.read_csv(data_path / "customers.csv")
         products_df = pd.read_csv(data_path / "products.csv")
         
+        # Normalize column names for new CSV schema
+        if "product_display_name" in products_df.columns and "ProductDisplayName" not in products_df.columns:
+            products_df = products_df.rename(columns={"product_display_name": "ProductDisplayName"})
+        if "sub_category" in products_df.columns and "subcategory" not in products_df.columns:
+            products_df = products_df.rename(columns={"sub_category": "subcategory"})
+        
         print(f"✅ Loaded {len(customers_df)} customers")
         print(f"✅ Loaded {len(products_df)} products")
         

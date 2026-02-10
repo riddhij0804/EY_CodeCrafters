@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import authService from '../../services/authService';
 import sessionStore from '../../lib/session';
+import Navbar from '@/components/Navbar.jsx';
 
 const initialForm = {
   name: '',
@@ -19,6 +20,8 @@ const LoginPage = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const navigate = useNavigate();
+  const location = useLocation();
+  const redirectTo = location.state?.redirectTo || '/';
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -65,7 +68,7 @@ const LoginPage = () => {
 
       const assignedId = response.customer?.customer_id || response.customer?.customerId;
       setSuccess(assignedId ? `Session ready! Your customer ID is ${assignedId}. Redirecting you now...` : 'Login successful. Redirecting you now...');
-      setTimeout(() => navigate('/'), 1200);
+      setTimeout(() => navigate(redirectTo, { replace: true }), 1200);
     } catch (submitError) {
       setError(submitError?.message || 'Failed to create session.');
     } finally {
@@ -74,8 +77,10 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-orange-50 via-yellow-50 to-red-50 px-4">
-      <div className="w-full max-w-xl bg-white/95 backdrop-blur shadow-xl rounded-2xl border border-red-100 p-8">
+    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-yellow-50 to-red-50">
+      <Navbar />
+      <div className="pt-20 flex items-center justify-center px-4">
+        <div className="w-full max-w-xl bg-white/95 backdrop-blur shadow-xl rounded-2xl border border-red-100 p-8">
         <h1 className="text-3xl font-semibold text-red-700 text-center mb-6">Customer Login</h1>
         <p className="text-sm text-gray-600 text-center mb-10">
           Sign in once and reuse your session on WhatsApp, Kiosk, and other channels without re-entering your phone number. We will create your customer ID automatically when you log in.
@@ -149,6 +154,7 @@ const LoginPage = () => {
             {isSubmitting ? 'Creating session...' : 'Sign In'}
           </button>
         </form>
+      </div>
       </div>
     </div>
   );
