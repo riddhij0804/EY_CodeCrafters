@@ -41,14 +41,14 @@ const ProductCatalog = () => {
     const fetchProducts = async () => {
       try {
         setLoading(true);
-        const response = await salesAgentService.getProducts({ limit: 1000 });
+        const response = await salesAgentService.getProducts({ limit: 5000 });
         const allProducts = response.products || [];
         
         setProducts(allProducts);
         
         // Extract unique values for filters
         const uniqueCategories = [...new Set(allProducts.map(p => p.category).filter(Boolean))];
-        const uniqueSubCategories = [...new Set(allProducts.map(p => p.subcategory).filter(Boolean))];
+        const uniqueSubCategories = [...new Set(allProducts.map(p => p.sub_category).filter(Boolean))];
         const uniqueBrands = [...new Set(allProducts.map(p => p.brand).filter(Boolean))];
         const uniqueGenders = [...new Set(allProducts.map(p => p.gender).filter(Boolean))];
         
@@ -76,7 +76,8 @@ const ProductCatalog = () => {
       result = result.filter(p =>
         (p.product_display_name?.toLowerCase().includes(query) ||
          p.brand?.toLowerCase().includes(query) ||
-         p.category?.toLowerCase().includes(query))
+         p.category?.toLowerCase().includes(query) ||
+         p.sub_category?.toLowerCase().includes(query))
       );
     }
     
@@ -87,7 +88,7 @@ const ProductCatalog = () => {
     
     // Sub-category filter
     if (filters.sub_category) {
-      result = result.filter(p => p.subcategory === filters.sub_category);
+      result = result.filter(p => p.sub_category === filters.sub_category);
     }
     
     // Gender filter
@@ -243,7 +244,7 @@ const ProductCatalog = () => {
                     <option value="">All Sub-Categories</option>
                     {(filters.category 
                       ? subCategories.filter(sc => 
-                          products.some(p => p.category === filters.category && p.subcategory === sc)
+                          products.some(p => p.category === filters.category && p.sub_category === sc)
                         )
                       : subCategories
                     ).map(subCat => (
@@ -412,7 +413,7 @@ const ProductCatalog = () => {
                       {/* Product Info */}
                       <div className="p-4 sm:p-5">
                         <p className="text-xs text-red-600 font-medium uppercase mb-1">
-                          {product.category} • {product.subcategory}
+                          {product.category} • {product.sub_category}
                         </p>
                         <h3 className="text-sm sm:text-base font-semibold text-gray-900 mb-2 line-clamp-2">
                           {product.product_display_name}

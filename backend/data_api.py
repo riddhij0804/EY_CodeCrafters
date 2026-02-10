@@ -9,10 +9,9 @@ from typing import Dict, Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import pandas as pd
 import uvicorn
-
-from .utils.image_resolver import enrich_with_images
 
 app = FastAPI(
     title="Data API",
@@ -31,9 +30,11 @@ app.add_middleware(
 
 # Data directory
 DATA_DIR = Path(__file__).parent / "data"
+IMAGES_DIR = DATA_DIR / "product_images"
 
-# Allowed image directories exposed via /assets endpoint
-ASSET_FOLDERS = {"product_images", "reebok_images"}
+# Mount static files for images at /images endpoint
+if IMAGES_DIR.exists():
+    app.mount("/images", StaticFiles(directory=str(IMAGES_DIR)), name="images")
 
 
 # Load CSV files
@@ -41,17 +42,24 @@ def load_csv(filename):
     """Load CSV file and return as list of dictionaries"""
     try:
         df = pd.read_csv(DATA_DIR / filename)
-        return df.to_dict(orient="records")
+        records = df.to_dict(orient="records")
+        
+        # Clean NaN values from records (convert to None for JSON serialization)
+        cleaned = []
+        for record in records:
+            clean_record = {}
+            for key, value in record.items():
+                # Check if value is NaN and convert to None
+                if pd.isna(value):
+                    clean_record[key] = None
+                else:
+                    clean_record[key] = value
+            cleaned.append(clean_record)
+        
+        return cleaned
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error loading {filename}: {str(e)}")
 
-
-def _format_product(record: Dict[str, Any], base_url: str) -> Dict[str, Any]:
-    enriched = dict(record)
-    enrich_with_images(enriched, base_url=base_url)
-    if enriched.get("primary_image"):
-        enriched["image_url"] = enriched["primary_image"]
-    return enriched
 
 @app.get("/")
 async def root():
@@ -67,40 +75,47 @@ async def root():
         ]
     }
 
-@app.get("/assets/{image_path:path}")
-async def serve_product_image(image_path: str):
-    """Serve product imagery from the data folder with path sanitisation."""
-    safe_path = Path(image_path)
-
-    root_folder = safe_path.parts[0]
-    if root_folder not in ASSET_FOLDERS:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    target_path = (DATA_DIR / safe_path).resolve()
-    allowed_base = (DATA_DIR / root_folder).resolve()
-
-    if not str(target_path).startswith(str(allowed_base)) or not target_path.is_file():
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    return FileResponse(target_path)
-
 
 @app.get("/products")
 async def get_products(
     request: Request,
-    limit: int = Query(default=20, le=100),
-    category: str = None
+    limit: int = Query(default=20, le=10000),
+    offset: int = Query(default=0, ge=0),
+    category: str = None,
+    subcategory: str = None,
+    gender: str = None,
+    brand: str = None,
+    min_price: int = None,
+    max_price: int = None,
+    min_rating: float = None
 ):
-    """Get all products with optional category filter"""
+    """Get all products with optional filters (category, subcategory, gender, brand, price, rating)"""
     products = load_csv("products.csv")
+    
+    # Apply filters
     if category:
         products = [p for p in products if p.get("category", "").lower() == category.lower()]
-    base_url = str(request.base_url).rstrip("/")
-    formatted = [_format_product(p, base_url) for p in products[:limit]]
+    if subcategory:
+        products = [p for p in products if p.get("sub_category", "").lower() == subcategory.lower()]
+    if gender:
+        products = [p for p in products if p.get("gender", "").lower() == gender.lower()]
+    if brand:
+        products = [p for p in products if p.get("brand", "").lower() == brand.lower()]
+    if min_price is not None:
+        products = [p for p in products if p.get("price") and float(p.get("price", 0)) >= min_price]
+    if max_price is not None:
+        products = [p for p in products if p.get("price") and float(p.get("price", 0)) <= max_price]
+    if min_rating is not None:
+        products = [p for p in products if p.get("ratings") and float(p.get("ratings", 0)) >= min_rating]
+    
+    total = len(products)
+    paginated = products[offset:offset + limit]
+    
     return {
-        "total": len(products),
+        "total": total,
         "limit": limit,
-        "products": formatted
+        "offset": offset,
+        "products": paginated
     }
 
 @app.get("/products/{sku}")
@@ -112,17 +127,19 @@ async def get_product(request: Request, sku: str):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    base_url = str(request.base_url).rstrip("/")
-    return _format_product(product, base_url)
+    return product
 
 @app.get("/customers")
-async def get_customers(limit: int = Query(default=20, le=100)):
+async def get_customers(limit: int = Query(default=20, le=10000), offset: int = Query(default=0, ge=0)):
     """Get all customers"""
     customers = load_csv("customers.csv")
+    total = len(customers)
+    paginated = customers[offset:offset + limit]
     return {
-        "total": len(customers),
+        "total": total,
         "limit": limit,
-        "customers": customers[:limit]
+        "offset": offset,
+        "customers": paginated
     }
 
 @app.get("/customers/{customer_id}")
@@ -138,7 +155,8 @@ async def get_customer(customer_id: int):
 
 @app.get("/orders")
 async def get_orders(
-    limit: int = Query(default=20, le=100),
+    limit: int = Query(default=20, le=10000),
+    offset: int = Query(default=0, ge=0),
     customer_id: int = None,
     status: str = None
 ):
@@ -151,10 +169,14 @@ async def get_orders(
     if status:
         orders = [o for o in orders if o.get('status', '').lower() == status.lower()]
     
+    total = len(orders)
+    paginated = orders[offset:offset + limit]
+    
     return {
-        "total": len(orders),
+        "total": total,
         "limit": limit,
-        "orders": orders[:limit]
+        "offset": offset,
+        "orders": paginated
     }
 
 @app.get("/orders/{order_id}")
@@ -178,23 +200,29 @@ async def get_stores():
     }
 
 @app.get("/inventory")
-async def get_inventory_data(limit: int = Query(default=20, le=100)):
+async def get_inventory_data(limit: int = Query(default=20, le=10000), offset: int = Query(default=0, ge=0)):
     """Get inventory data"""
     inventory = load_csv("inventory.csv")
+    total = len(inventory)
+    paginated = inventory[offset:offset + limit]
     return {
-        "total": len(inventory),
+        "total": total,
         "limit": limit,
-        "inventory": inventory[:limit]
+        "offset": offset,
+        "inventory": paginated
     }
 
 @app.get("/payments")
-async def get_payments(limit: int = Query(default=20, le=100)):
+async def get_payments(limit: int = Query(default=20, le=10000), offset: int = Query(default=0, ge=0)):
     """Get payment records"""
     payments = load_csv("payments.csv")
+    total = len(payments)
+    paginated = payments[offset:offset + limit]
     return {
-        "total": len(payments),
+        "total": total,
         "limit": limit,
-        "payments": payments[:limit]
+        "offset": offset,
+        "payments": paginated
     }
 
 if __name__ == "__main__":
