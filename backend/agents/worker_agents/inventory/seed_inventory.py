@@ -41,9 +41,21 @@ def seed_online_inventory():
 
 
 def seed_store_inventory():
-    """Seed store inventory from inventory.csv."""
-    
-    csv_path = Path(__file__).parent.parent.parent.parent / "data" / "inventory.csv"
+    """Seed store inventory from inventory.csv or inventory_full.csv (preferred).
+
+    The script will use `inventory_full.csv` when available (this file contains
+    per-store rows) otherwise it falls back to `inventory.csv`.
+    """
+    # Prefer the comprehensive inventory_full.csv if present
+    base = Path(__file__).parent.parent.parent.parent / "data"
+    csv_full = base / "inventory_full.csv"
+    csv_default = base / "inventory.csv"
+
+    if csv_full.exists():
+        csv_path = csv_full
+        print(f"Using inventory_full.csv for store seeding: {csv_path}")
+    else:
+        csv_path = csv_default
     
     if not csv_path.exists():
         print(f"❌ CSV file not found: {csv_path}")
@@ -58,6 +70,7 @@ def seed_store_inventory():
         reader = csv.DictReader(f)
         
         for row in reader:
+            # inventory_full.csv uses header 'quantity'; other CSVs may vary
             sku = row.get('sku')
             store_id = row.get('store_id')
             quantity_raw = (

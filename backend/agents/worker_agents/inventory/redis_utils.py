@@ -204,7 +204,26 @@ def hold_stock_atomic(sku: str, quantity: int, location: str = "online") -> int:
     if redis_client and hold_stock_script:
         try:
             result = hold_stock_script(args=[sku, quantity, location])
-            return int(result)
+            remaining = int(result)
+            # If Supabase write enabled, attempt to decrement Supabase as well
+            try:
+                from db.repositories import inventory_repo
+                ok = inventory_repo.decrement_stock(sku, location, quantity)
+                if ok:
+                    print(f"✓ Supabase decremented for {sku} at {location} by {quantity}")
+                else:
+                    # Attempt to create/upsert row with remaining value when decrement failed
+                    try:
+                        up_ok = inventory_repo.upsert_stock(sku, location, remaining)
+                        if up_ok:
+                            print(f"✓ Supabase upserted row for {sku} at {location} with quantity={remaining}")
+                        else:
+                            print(f"⚠ Supabase decrement skipped and upsert failed for {sku} at {location}")
+                    except Exception as e2:
+                        print(f"⚠ Exception while upserting Supabase stock for {sku} at {location}: {e2}")
+            except Exception as e:
+                print(f"⚠ Failed to update Supabase stock after hold: {e}")
+            return remaining
         except Exception as e:
             print(f"Error holding stock: {e}")
             return -1
@@ -229,7 +248,14 @@ def release_stock_atomic(sku: str, quantity: int, location: str = "online") -> i
     if redis_client and release_stock_script:
         try:
             result = release_stock_script(args=[sku, quantity, location])
-            return int(result)
+            new_stock = int(result)
+            # If Supabase write enabled, attempt to increment Supabase as well
+            try:
+                from db.repositories import inventory_repo
+                inventory_repo.increment_stock(sku, location, quantity)
+            except Exception as e:
+                print(f"⚠ Failed to update Supabase stock after release: {e}")
+            return new_stock
         except Exception as e:
             print(f"Error releasing stock: {e}")
             return 0
