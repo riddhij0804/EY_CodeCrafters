@@ -4,6 +4,7 @@ import { useCart } from '@/contexts/CartContext.jsx';
 import { useWishlist } from '@/contexts/WishlistContext.jsx';
 import { useRef, useState, useEffect } from 'react';
 import sessionStore from '@/lib/session';
+import authService from '@/services/authService';
 
 const Navbar = () => {
   const navigate = useNavigate();
@@ -51,6 +52,29 @@ const Navbar = () => {
     document.addEventListener('mousedown', handleClickAway);
     return () => document.removeEventListener('mousedown', handleClickAway);
   }, [profileMenuOpen]);
+
+  const handleLogout = async () => {
+    const sessionToken = sessionStore.getSessionToken();
+    
+    // Close menu
+    setProfileMenuOpen(false);
+    
+    // Clear local session data immediately
+    sessionStore.clearAll();
+    
+    // Call backend logout endpoint if we have a session token
+    if (sessionToken) {
+      try {
+        await authService.logout(sessionToken);
+      } catch (error) {
+        console.error('Logout API call failed:', error);
+        // Continue with logout even if API fails
+      }
+    }
+    
+    // Navigate to login page
+    navigate('/login');
+  };
 
   return (
     <nav className="fixed top-0 left-0 right-0 w-full z-50 bg-gradient-to-r from-red-600 to-orange-600 backdrop-blur-sm shadow-sm">
@@ -105,29 +129,60 @@ const Navbar = () => {
             </div>
           </div>
 
-          {/* Right - Sign In and Cart */}
-          <div className="hidden md:flex items-center space-x-6 relative">
+          {/* Right - Auth, Cart & Wishlist */}
+          <div className="hidden md:flex items-center space-x-4 relative">
+            {/* Auth Section */}
             {profile ? (
-              <button
-                ref={profileButtonRef}
-                onClick={() => setProfileMenuOpen((open) => !open)}
-                className="relative flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 hover:bg-white/15 text-yellow-100 transition-colors"
-              >
-                <User className="w-5 h-5" />
-                <span className="text-xs font-semibold tracking-wider">{displayName}</span>
-              </button>
+              <>
+                {/* Profile Button with Dropdown */}
+                <button
+                  ref={profileButtonRef}
+                  onClick={() => setProfileMenuOpen((open) => !open)}
+                  className="relative flex items-center gap-2 px-4 py-2 rounded-lg bg-white/15 hover:bg-white/20 text-yellow-100 transition-all border border-yellow-300/30"
+                >
+                  <User className="w-4 h-4" />
+                  <span className="text-xs font-semibold tracking-wider">{displayName}</span>
+                </button>
+                
+                {/* Direct Profile Link */}
+                <button
+                  onClick={() => navigate('/profile')}
+                  className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider px-3 py-2 rounded hover:bg-white/10"
+                  title="My Profile"
+                >
+                  PROFILE
+                </button>
+                
+                {/* Direct Logout Button */}
+                <button
+                  onClick={handleLogout}
+                  className="text-xs font-medium text-yellow-100 hover:text-red-200 transition-colors tracking-wider px-3 py-2 rounded hover:bg-red-500/20 border border-red-300/30"
+                  title="Logout"
+                >
+                  LOGOUT
+                </button>
+              </>
             ) : (
-              <button
-                onClick={() => navigate('/login')}
-                className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider"
-              >
-                SIGN IN
-              </button>
+              <>
+                {/* Login Button - More Prominent */}
+                <button
+                  onClick={() => navigate('/login')}
+                  className="text-xs font-semibold text-yellow-100 hover:text-white transition-colors tracking-wider px-5 py-2 rounded-lg bg-white/15 hover:bg-white/25 border border-yellow-300/40"
+                >
+                  LOGIN / SIGNUP
+                </button>
+              </>
             )}
+            
+            {/* Divider */}
+            <div className="h-8 w-px bg-yellow-300/30"></div>
+            
+            {/* Cart */}
             <button 
               onClick={() => navigate('/cart')}
-              className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors" 
+              className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors hover:bg-white/10 rounded" 
               aria-label="Shopping cart"
+              title="Shopping Cart"
             >
               <ShoppingCart className="w-5 h-5" />
               {getCartCount() > 0 && (
@@ -137,10 +192,12 @@ const Navbar = () => {
               )}
             </button>
 
+            {/* Wishlist */}
             <button
               onClick={() => navigate('/wishlist')}
-              className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors"
+              className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors hover:bg-white/10 rounded"
               aria-label="Wishlist"
+              title="Wishlist"
             >
               <Heart className="w-5 h-5" />
               {wishlistItems.length > 0 && (
@@ -181,20 +238,26 @@ const Navbar = () => {
                       <span className="text-red-600">{displayCity}</span>
                     </div>
                   )}
-                      <div className="pt-2 border-t border-red-100/40">
-                        <button
-                          onClick={() => { setProfileMenuOpen(false); navigate('/orders'); }}
-                          className="w-full text-left px-3 py-2 rounded hover:bg-red-50"
-                        >
-                          Orders
-                        </button>
-                        <button
-                          onClick={() => { setProfileMenuOpen(false); sessionStore.clearAll(); navigate('/login'); }}
-                          className="w-full text-left px-3 py-2 rounded text-red-700 hover:bg-red-50"
-                        >
-                          Logout
-                        </button>
-                      </div>
+                  <div className="pt-2 border-t border-red-100/40">
+                    <button
+                      onClick={() => { setProfileMenuOpen(false); navigate('/profile'); }}
+                      className="w-full text-left px-3 py-2 rounded hover:bg-red-50"
+                    >
+                      My Profile
+                    </button>
+                    <button
+                      onClick={() => { setProfileMenuOpen(false); navigate('/orders'); }}
+                      className="w-full text-left px-3 py-2 rounded hover:bg-red-50"
+                    >
+                      Orders
+                    </button>
+                    <button
+                      onClick={handleLogout}
+                      className="w-full text-left px-3 py-2 rounded text-red-700 hover:bg-red-50 font-medium"
+                    >
+                      Logout
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

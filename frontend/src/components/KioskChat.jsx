@@ -159,9 +159,10 @@ const KioskChat = () => {
       const profile = sessionStore.getProfile();
       const storedToken = sessionStore.getSessionToken();
 
+      // If no login session exists, redirect to login (but don't clear other sessions)
       if (!phone || !profile) {
-        sessionStore.clearAll();
-        navigate('/login');
+        navigate('/login', { state: { redirectTo: '/kiosk' } });
+        setIsLoadingSession(false);
         return;
       }
 

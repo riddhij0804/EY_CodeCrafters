@@ -26,6 +26,12 @@ langsmith
 # --- Data validation ---
 pydantic
 
+# --- Data processing ---
+pandas
+
+# --- Password hashing ---
+bcrypt
+
 # --- HTTP utilities ---
 requests
 aiohttp

@@ -760,6 +760,385 @@ async def session_end(x_session_token: Optional[str] = Header(None, alias="X-Ses
     })
 
 
+# ===================================================================
+# Authentication Endpoints (New - for multi-channel auth with passwords)
+# ===================================================================
+
+# Import auth manager for password-based authentication
+try:
+    from auth_manager import (
+        create_customer,
+        validate_login,
+        generate_qr_token,
+        verify_qr_token,
+        cleanup_expired_qr_tokens,
+    )
+    AUTH_ENABLED = True
+    logger.info("Auth manager loaded successfully - password authentication enabled")
+except ImportError as e:
+    AUTH_ENABLED = False
+    logger.warning(f"Auth manager not available: {e}")
+
+
+class SignupRequest(BaseModel):
+    """Request model for customer signup with password."""
+    name: str = Field(..., description="Customer name")
+    phone_number: str = Field(..., description="Phone number (must be unique)")
+    password: str = Field(..., min_length=6, description="Password (minimum 6 characters)")
+    age: Optional[int] = Field(default=None, ge=0, le=150, description="Age in years")
+    gender: Optional[str] = Field(default=None, description="Gender")
+    city: Optional[str] = Field(default=None, description="City")
+    building_name: Optional[str] = Field(default=None, description="Building name")
+    address_landmark: Optional[str] = Field(default=None, description="Address landmark")
+    channel: str = Field(default="web", description="Channel: web, whatsapp, kiosk")
+
+
+class PasswordLoginRequest(BaseModel):
+    """Request model for password-based login."""
+    phone_number: str = Field(..., description="Phone number")
+    password: str = Field(..., description="Password")
+    channel: str = Field(default="web", description="Channel: web, whatsapp, kiosk")
+
+
+class QRInitRequest(BaseModel):
+    """Request model for QR code initialization."""
+    phone_number: str = Field(..., description="Phone number of logged-in user")
+
+
+class QRVerifyRequest(BaseModel):
+    """Request model for QR code verification."""
+    qr_token: str = Field(..., description="QR token from QR code")
+    channel: str = Field(default="kiosk", description="Channel: typically kiosk")
+
+
+@app.post("/auth/signup")
+async def auth_signup(request: SignupRequest):
+    """Create a new customer account with password.
+    
+    This endpoint:
+    1. Validates that phone number is unique
+    2. Creates customer record in CSV with password hash
+    3. Creates active session
+    4. Returns session token and customer record
+    
+    Dual-channel support:
+    - Web users: Must provide password
+    - WhatsApp users: Can still use /session/login (password-less flow)
+    """
+    if not AUTH_ENABLED:
+        raise HTTPException(
+            status_code=501,
+            detail="Password authentication not available. Auth manager not loaded."
+        )
+    
+    # Validate required fields
+    phone = (request.phone_number or "").strip()
+    password = (request.password or "").strip()
+    name = (request.name or "").strip()
+    
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    
+    try:
+        # Create customer with password
+        customer_record = create_customer(
+            name=name,
+            phone=phone,
+            password=password,
+            age=request.age,
+            gender=request.gender,
+            city=request.city,
+            building_name=request.building_name,
+            address_landmark=request.address_landmark,
+        )
+        
+        customer_id = customer_record.get('customer_id')
+        
+        # Register phone mapping
+        _register_phone_mapping(phone, customer_id)
+        
+        # Create session
+        token, session = create_session(
+            phone=phone,
+            channel=request.channel,
+            user_id=customer_id,
+            customer_id=customer_id,
+            customer_profile=customer_record,
+        )
+        
+        logger.info(f"Signup successful: customer_id={customer_id}, phone={phone}")
+        
+        return JSONResponse(status_code=201, content={
+            "success": True,
+            "message": "Account created successfully",
+            "session_token": token,
+            "session": session,
+            "customer": customer_record,
+        })
+        
+    except ValueError as e:
+        # Customer already exists or validation error
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Signup failed")
+        raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
+
+
+@app.post("/auth/login")
+async def auth_login(request: PasswordLoginRequest):
+    """Authenticate with phone number and password.
+    
+    This endpoint:
+    1. Validates phone + password credentials
+    2. Retrieves customer record
+    3. Creates or restores session
+    4. Returns session token
+    
+    Note: WhatsApp users without passwords should continue using /session/login
+    """
+    if not AUTH_ENABLED:
+        raise HTTPException(
+            status_code=501,
+            detail="Password authentication not available. Auth manager not loaded."
+        )
+    
+    phone = (request.phone_number or "").strip()
+    password = (request.password or "").strip()
+    
+    if not phone or not password:
+        raise HTTPException(status_code=400, detail="Phone and password are required")
+    
+    try:
+        # Validate credentials
+        success, customer = validate_login(phone, password)
+        
+        if not success:
+            raise HTTPException(status_code=401, detail="Invalid phone number or password")
+        
+        customer_id = customer.get('customer_id')
+        
+        # Register phone mapping
+        _register_phone_mapping(phone, customer_id)
+        
+        # Create or restore session
+        token, session = create_session(
+            phone=phone,
+            channel=request.channel,
+            user_id=customer_id,
+            customer_id=customer_id,
+            customer_profile=customer,
+        )
+        
+        logger.info(f"Login successful: customer_id={customer_id}, phone={phone}")
+        
+        return JSONResponse(status_code=200, content={
+            "success": True,
+            "message": "Login successful",
+            "session_token": token,
+            "session": session,
+            "customer": customer,
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Login failed")
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+
+@app.post("/auth/logout")
+async def auth_logout(x_session_token: Optional[str] = Header(None, alias="X-Session-Token")):
+    """Logout by invalidating the current session token.
+    
+    This endpoint:
+    1. Validates session token
+    2. Marks session as inactive
+    3. Removes token from lookup tables
+    4. Returns success message
+    
+    Note: Session data is preserved for 2 hours but marked inactive.
+    User must login again to get a new token.
+    """
+    if not x_session_token:
+        raise HTTPException(status_code=400, detail="Missing X-Session-Token header")
+    
+    # Check if session exists
+    if x_session_token not in SESSIONS:
+        raise HTTPException(status_code=404, detail="Session not found or already logged out")
+    
+    session = SESSIONS[x_session_token]
+    
+    # Mark session as inactive
+    session["is_active"] = False
+    session["updated_at"] = _now_iso()
+    
+    # Remove from phone lookup
+    phone = session.get("phone")
+    if phone and PHONE_SESSIONS.get(phone) == x_session_token:
+        del PHONE_SESSIONS[phone]
+    
+    # Remove from telegram lookup if exists
+    telegram_chat_id = session.get("telegram_chat_id")
+    if telegram_chat_id and TELEGRAM_SESSIONS.get(telegram_chat_id) == x_session_token:
+        del TELEGRAM_SESSIONS[telegram_chat_id]
+    
+    logger.info(f"Logout successful: token={x_session_token}, phone={phone}")
+    
+    return JSONResponse(status_code=200, content={
+        "success": True,
+        "message": "Logged out successfully",
+        "session_id": session["session_id"],
+    })
+
+
+@app.post("/auth/qr-init")
+async def auth_qr_init(
+    request: QRInitRequest,
+    x_session_token: Optional[str] = Header(None, alias="X-Session-Token")
+):
+    """Generate a QR code token for kiosk authentication.
+    
+    This endpoint:
+    1. Validates user is logged in (via session token)
+    2. Generates a secure QR token (expires in 15 minutes)
+    3. Returns token for QR code generation
+    
+    Usage flow:
+    1. User logs in on website
+    2. User requests QR code
+    3. QR code displays token
+    4. Kiosk scans QR code
+    5. Kiosk calls /auth/qr-verify with token
+    """
+    if not AUTH_ENABLED:
+        raise HTTPException(
+            status_code=501,
+            detail="QR authentication not available. Auth manager not loaded."
+        )
+    
+    if not x_session_token:
+        raise HTTPException(status_code=401, detail="Must be logged in to generate QR code")
+    
+    # Verify session exists and is active
+    if x_session_token not in SESSIONS:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    
+    session = SESSIONS[x_session_token]
+    
+    if not session.get("is_active"):
+        raise HTTPException(status_code=401, detail="Session is not active")
+    
+    phone = request.phone_number.strip()
+    customer_id = session.get("customer_id") or session.get("user_id")
+    
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="Customer ID not found in session")
+    
+    try:
+        # Generate QR token
+        qr_token = generate_qr_token(phone, customer_id)
+        
+        # Cleanup expired tokens periodically
+        cleanup_expired_qr_tokens()
+        
+        logger.info(f"QR token generated for customer {customer_id}")
+        
+        return JSONResponse(status_code=200, content={
+            "success": True,
+            "qr_token": qr_token,
+            "expires_in_seconds": 900,  # 15 minutes
+            "customer_id": customer_id,
+        })
+        
+    except Exception as e:
+        logger.exception("QR token generation failed")
+        raise HTTPException(status_code=500, detail=f"Failed to generate QR token: {str(e)}")
+
+
+@app.post("/auth/qr-verify")
+async def auth_qr_verify(request: QRVerifyRequest):
+    """Verify a QR code token and create a kiosk session.
+    
+    This endpoint:
+    1. Validates QR token (checks expiry)
+    2. Retrieves customer info from token
+    3. Creates new kiosk session
+    4. Returns session token for kiosk
+    
+    Usage flow:
+    1. Kiosk scans QR code
+    2. Kiosk extracts token from QR
+    3. Kiosk calls this endpoint
+    4. Kiosk receives session token
+    5. Kiosk can now make authenticated requests
+    """
+    if not AUTH_ENABLED:
+        raise HTTPException(
+            status_code=501,
+            detail="QR authentication not available. Auth manager not loaded."
+        )
+    
+    qr_token = (request.qr_token or "").strip()
+    
+    if not qr_token:
+        raise HTTPException(status_code=400, detail="QR token is required")
+    
+    try:
+        # Verify QR token
+        valid, customer_info = verify_qr_token(qr_token)
+        
+        if not valid:
+            raise HTTPException(status_code=401, detail="Invalid or expired QR token")
+        
+        phone = customer_info['phone']
+        customer_id = customer_info['customer_id']
+        
+        # Retrieve customer record
+        from db.repositories.customer_repo import get_customer_by_phone
+        try:
+            customer_record = get_customer_by_phone(phone)
+        except:
+            # Fallback: load from CSV
+            import pandas as pd
+            df = pd.read_csv(Path(__file__).parent / "data" / "customers.csv")
+            matches = df[df['phone_number'].astype(str) == str(phone)]
+            if len(matches) > 0:
+                customer_record = matches.iloc[0].to_dict()
+            else:
+                customer_record = {"customer_id": customer_id, "phone_number": phone}
+        
+        # Create kiosk session
+        token, session = create_session(
+            phone=phone,
+            channel=request.channel,
+            user_id=customer_id,
+            customer_id=customer_id,
+            customer_profile=customer_record,
+        )
+        
+        logger.info(f"QR verification successful: customer_id={customer_id}, channel={request.channel}")
+        
+        return JSONResponse(status_code=200, content={
+            "success": True,
+            "message": "QR authentication successful",
+            "session_token": token,
+            "session": session,
+            "customer": customer_record,
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("QR verification failed")
+        raise HTTPException(status_code=500, detail=f"QR verification failed: {str(e)}")
+
+
 # Allow this module to be executed directly for local development
 if __name__ == "__main__":
     # Run uvicorn with this module's `app` object

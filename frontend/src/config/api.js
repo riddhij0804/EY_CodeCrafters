@@ -10,6 +10,13 @@ export const API_ENDPOINTS = {
   SESSION_UPDATE: `${API_BASE_URL}:8000/session/update`,
   SESSION_LOGIN: `${API_BASE_URL}:8000/session/login`,
   
+  // Authentication (Password-based - Port 8000)
+  AUTH_SIGNUP: `${API_BASE_URL}:8000/auth/signup`,
+  AUTH_LOGIN: `${API_BASE_URL}:8000/auth/login`,
+  AUTH_LOGOUT: `${API_BASE_URL}:8000/auth/logout`,
+  AUTH_QR_INIT: `${API_BASE_URL}:8000/auth/qr-init`,
+  AUTH_QR_VERIFY: `${API_BASE_URL}:8000/auth/qr-verify`,
+  
   // Sales Agent with Orchestration (Port 8010)
   SALES_AGENT: `${API_BASE_URL}:8010`,
   SEND_MESSAGE: `${API_BASE_URL}:8010/api/message`,

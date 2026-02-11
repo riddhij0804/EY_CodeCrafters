@@ -147,23 +147,42 @@ const LandingPage = () => {
               </div>
             </div>
 
-            {/* Right - Sign In and Cart */}
-            <div className="hidden md:flex items-center space-x-6 relative">
+            {/* Right - Auth, Profile, and Cart */}
+            <div className="hidden md:flex items-center space-x-4 relative">
               {profile ? (
-                <button
-                  ref={profileButtonRef}
-                  onClick={() => setProfileMenuOpen((open) => !open)}
-                  className="relative flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 hover:bg-white/15 text-yellow-100 transition-colors"
-                >
-                  <User className="w-5 h-5" />
-                  <span className="text-xs font-semibold tracking-wider">{displayName}</span>
-                </button>
+                <>
+                  <button
+                    ref={profileButtonRef}
+                    onClick={() => setProfileMenuOpen((open) => !open)}
+                    className="relative flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 hover:bg-white/15 text-yellow-100 transition-colors"
+                  >
+                    <User className="w-5 h-5" />
+                    <span className="text-xs font-semibold tracking-wider">{displayName}</span>
+                  </button>
+                  <Link
+                    to="/profile"
+                    className="px-4 py-2 text-xs font-semibold tracking-wider text-yellow-100 hover:bg-white/15 transition-colors rounded-lg"
+                  >
+                    PROFILE
+                  </Link>
+                  <button
+                    onClick={() => {
+                      sessionStore.clearAll();
+                      setCustomerProfile(null);
+                      navigate('/login');
+                    }}
+                    className="px-4 py-2 text-xs font-semibold tracking-wider text-yellow-100 hover:bg-red-700 transition-colors rounded-lg"
+                  >
+                    LOGOUT
+                  </button>
+                  <div className="w-px h-6 bg-yellow-300/40"></div>
+                </>
               ) : (
                 <Link
                   to="/login"
-                  className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider"
+                  className="px-5 py-2 rounded-lg bg-white/15 hover:bg-white/25 border border-yellow-300/40 text-xs font-semibold text-yellow-100 tracking-wider transition-colors"
                 >
-                  SIGN IN
+                  LOGIN / SIGNUP
                 </Link>
               )}
               <button 
