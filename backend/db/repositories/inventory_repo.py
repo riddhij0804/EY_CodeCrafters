@@ -47,7 +47,8 @@ def get_stock(sku: str) -> Optional[Dict[str, Any]]:
         return None
     
     try:
-        rows = select("inventory", params=f"sku=eq.{sku}", columns="sku,store_id,quantity")
+        # Quote string values in PostgREST filter params to avoid 400 Bad Request
+        rows = select("inventory", params=f"sku=eq.'{sku}'", columns="sku,store_id,quantity")
         if not rows:
             print(f"[inventory_repo] No rows for SKU={sku}")
             return None
@@ -65,3 +66,101 @@ def get_total_stock(sku: str) -> Optional[int]:
     if stock is None:
         return None
     return stock.get("total", 0)
+
+
+def _normalize_store_id(location: str) -> str:
+    """Normalize location string to store_id used in Supabase inventory rows."""
+    if not location:
+        return "ONLINE"
+    if isinstance(location, str) and location.lower() == "online":
+        return "ONLINE"
+    # location might be 'store:STORE_MUMBAI' or 'STORE_MUMBAI'
+    if isinstance(location, str) and location.startswith("store:"):
+        return location.split(":", 1)[1].upper()
+    return str(location).upper()
+
+
+def decrement_stock(sku: str, location: str, amount: int) -> bool:
+    """Decrease stock in Supabase for the given sku and location by amount.
+
+    Returns True on success, False otherwise.
+    Requires FEATURE_SUPABASE_WRITE to be enabled in supabase_client.
+    """
+    try:
+        from ..supabase_client import is_write_enabled, select_one, update
+
+        if not is_write_enabled():
+            # Write not enabled; skip
+            return False
+
+        store_id = _normalize_store_id(location)
+        # Find existing row quantity (don't assume an 'id' column exists)
+        row = select_one("inventory", params=f"sku=eq.'{sku}'&store_id=eq.'{store_id}'", columns="quantity")
+        if not row:
+            # No existing row to decrement
+            return False
+        try:
+            current = int(row.get("quantity") or 0)
+        except Exception:
+            current = 0
+        new_qty = max(0, current - int(amount))
+        # Update row using composite filter (sku + store_id) to avoid requiring an 'id' column
+        update("inventory", {"quantity": new_qty}, params=f"sku=eq.'{sku}'&store_id=eq.'{store_id}'")
+        return True
+    except Exception as e:
+        print(f"[inventory_repo] Failed to decrement stock for {sku} at {location}: {e}")
+        return False
+
+
+def increment_stock(sku: str, location: str, amount: int) -> bool:
+    """Increase stock in Supabase for the given sku and location by amount."""
+    try:
+        from ..supabase_client import is_write_enabled, select_one, update
+
+        if not is_write_enabled():
+            return False
+
+        store_id = _normalize_store_id(location)
+        # Find existing row quantity (don't assume an 'id' column exists)
+        row = select_one("inventory", params=f"sku=eq.'{sku}'&store_id=eq.'{store_id}'", columns="quantity")
+        if not row:
+            # No existing row; cannot increment
+            return False
+        try:
+            current = int(row.get("quantity") or 0)
+        except Exception:
+            current = 0
+        new_qty = current + int(amount)
+        # Update row using composite filter (sku + store_id)
+        update("inventory", {"quantity": new_qty}, params=f"sku=eq.'{sku}'&store_id=eq.'{store_id}'")
+        return True
+    except Exception as e:
+        print(f"[inventory_repo] Failed to increment stock for {sku} at {location}: {e}")
+        return False
+
+
+def upsert_stock(sku: str, location: str, quantity: int) -> bool:
+    """Insert or update a Supabase inventory row for given sku and store_id.
+
+    This is a best-effort helper used when no existing row is found.
+    Returns True on success, False on failure.
+    """
+    try:
+        from ..supabase_client import is_write_enabled, upsert
+
+        if not is_write_enabled():
+            return False
+
+        store_id = _normalize_store_id(location)
+        payload = {
+            "sku": sku,
+            "store_id": store_id,
+            "quantity": int(quantity)
+        }
+
+        # Use upsert without explicit on_conflict to create the row when missing.
+        upsert("inventory", payload)
+        return True
+    except Exception as e:
+        print(f"[inventory_repo] Failed to upsert stock for {sku} at {location}: {e}")
+        return False

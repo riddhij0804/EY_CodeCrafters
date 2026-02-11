@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { CartProvider } from '@/contexts/CartContext.jsx';
+import { WishlistProvider } from '@/contexts/WishlistContext.jsx';
 import MainApp from './components/MainApp';
 import KioskChat from './components/KioskChat';
 import LandingPage from './components/pages/LandingPage';
@@ -8,11 +9,15 @@ import CartPage from './components/pages/CartPage';
 import CheckoutPage from './components/pages/CheckoutPage';
 import ProductCatalog from './components/pages/ProductCatalog';
 import ProductDetail from './components/pages/ProductDetail';
+import Wishlist from './components/pages/Wishlist';
+import OrdersPage from './components/pages/OrdersPage';
+import OrderDetailPage from './components/pages/OrderDetailPage';
 
 function App() {
   return (
     <CartProvider>
-      <Router>
+      <WishlistProvider>
+        <Router>
         <div className="min-h-screen bg-background">
           <Routes>
             <Route path="/" element={<LandingPage />} />
@@ -21,11 +26,15 @@ function App() {
             <Route path="/kiosk" element={<KioskChat />} />
             <Route path="/products" element={<ProductCatalog />} />
             <Route path="/products/:sku" element={<ProductDetail />} />
+            <Route path="/wishlist" element={<Wishlist />} />
             <Route path="/cart" element={<CartPage />} />
             <Route path="/checkout" element={<CheckoutPage />} />
+            <Route path="/orders" element={<OrdersPage />} />
+            <Route path="/orders/:id" element={<OrderDetailPage />} />
           </Routes>
         </div>
-      </Router>
+        </Router>
+      </WishlistProvider>
     </CartProvider>
   );
 }

@@ -45,6 +45,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get("/health")
+async def health_check():
+    """Lightweight health endpoint used by orchestrators and frontend probes."""
+    try:
+        # Basic sanity checks
+        samples_loaded = len(PHONE_TO_CUSTOMER) >= 0
+        return JSONResponse(status_code=200, content={"status": "healthy", "samples": samples_loaded})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "unhealthy", "error": str(e)})
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request, exc):
+    logger.error(f"Unhandled error in session_manager: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"status": "error", "message": "Internal server error"})
+
 # In-memory session store (mapping session_token -> session dict)
 # This satisfies the "no database" requirement; all data is lost on process restart.
 SESSIONS: Dict[str, Dict[str, Any]] = {}

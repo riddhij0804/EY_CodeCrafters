@@ -27,7 +27,35 @@ except ImportError:  # pragma: no cover - fallback for direct execution
     if str(_project_root) not in sys.path:
         sys.path.append(str(_project_root))
 
-    from backend.utils.image_resolver import resolve_image_reference  # type: ignore
+    try:
+        from backend.utils.image_resolver import resolve_image_reference  # type: ignore
+    except ImportError:  # pragma: no cover - minimal local resolver
+        DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
+
+        def _as_iterable(value):
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                return [v for v in value if v]
+            return [value]
+
+        def resolve_image_reference(value, base_url=None, data_root=DATA_ROOT):  # type: ignore
+            base = (base_url or "").rstrip("/")
+            for candidate in _as_iterable(value):
+                if not candidate:
+                    continue
+                text = str(candidate).strip()
+                if not text:
+                    continue
+                lower = text.lower()
+                if lower.startswith("http://") or lower.startswith("https://") or lower.startswith("data:"):
+                    return text
+
+                safe = text.replace("\\", "/").lstrip("/")
+                if base:
+                    return f"{base}/assets/{safe}"
+                return f"/assets/{safe}"
+            return ""
 
 # LLM imports
 try:
@@ -113,6 +141,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get('/health')
+async def health():
+    try:
+        # quick check: data path exists and LLM client created (or not required)
+        data_ok = DATA_PATH.exists()
+        llm_ready = llm_client is not None or LLM_PROVIDER not in ("gemini", "groq")
+        return {"status": "healthy", "data_path": str(DATA_PATH), "llm_ready": llm_ready}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "unhealthy", "error": str(e)})
+
+
+@app.exception_handler(Exception)
+async def recommendation_exception_handler(request, exc):
+    logger.error(f"Unhandled error in recommendation agent: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"status": "error", "message": "Internal server error"})
 
 # ==========================================
 # DATA LOADING (Supabase first, CSV fallback)

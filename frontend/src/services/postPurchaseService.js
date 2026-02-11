@@ -105,10 +105,24 @@ export const submitFeedback = async (payload) => {
  * @returns {Promise<Object>} Stored order details
  */
 export const registerPostPurchaseOrder = async (payload) => {
-  return apiCall(API_ENDPOINTS.POST_PURCHASE_REGISTER_ORDER, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  try {
+    return await apiCall(API_ENDPOINTS.POST_PURCHASE_REGISTER_ORDER, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    // If post-purchase service is not available (404) or fails, fallback to local storing
+    console.warn('Post-purchase register failed, falling back to local store:', error);
+    try {
+      const raw = localStorage.getItem('ey_post_purchase_orders');
+      const list = raw ? JSON.parse(raw) : [];
+      list.push({ payload, timestamp: new Date().toISOString() });
+      localStorage.setItem('ey_post_purchase_orders', JSON.stringify(list));
+    } catch (e) {
+      console.error('Failed to save post-purchase order locally', e);
+    }
+    return { status: 'fallback_stored', payload };
+  }
 };
 
 export default {

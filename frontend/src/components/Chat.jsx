@@ -1,17 +1,37 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-<<<<<<< HEAD
-import { Send, Check, CheckCheck, Phone, Video, Mic, MicOff, User, X, CreditCard, LifeBuoy, CheckCircle, ImagePlus } from 'lucide-react';
-=======
-import { Send, Check, CheckCheck, Phone, Video, Mic, MicOff, User, X, CreditCard, LifeBuoy, CheckCircle, ShoppingCart } from 'lucide-react';
+
+import {
+  Send,
+  Check,
+  CheckCheck,
+  Phone,
+  Video,
+  Mic,
+  MicOff,
+  User,
+  X,
+  CreditCard,
+  LifeBuoy,
+  CheckCircle,
+  ImagePlus,
+  ShoppingCart,
+} from 'lucide-react';
+
 import { useCart } from '@/contexts/CartContext.jsx';
->>>>>>> d15733c1613079033a04f7c26aba13d9e2bb43fe
-import { createRazorpayOrder, verifyRazorpayPayment, getNextOrderId } from '../services/paymentService';
+
+import {
+  createRazorpayOrder,
+  verifyRazorpayPayment,
+  getNextOrderId,
+} from '../services/paymentService';
+
 import { getTierInfo } from '../services/loyaltyService';
 import { setDeliveryWindow } from '../services/fulfillmentService';
 import API_ENDPOINTS from '../config/api';
 import sessionStore from '../lib/session';
 import salesAgentService from '../services/salesAgentService';
+
 import {
   getReturnReasons,
   getIssueTypes,

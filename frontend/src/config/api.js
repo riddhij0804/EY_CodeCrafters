@@ -109,8 +109,12 @@ export const apiCall = async (url, options = {}) => {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(error.message || error.error || `HTTP ${response.status}`);
+      const errorBody = await response.json().catch(() => null);
+      const msg = (errorBody && (errorBody.message || errorBody.error)) || `HTTP ${response.status}`;
+      const err = new Error(msg);
+      err.status = response.status;
+      err.body = errorBody;
+      throw err;
     }
 
     return await response.json();

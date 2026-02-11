@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ShoppingCart, Heart, Share2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useCart } from '@/contexts/CartContext.jsx';
+import { useWishlist } from '@/contexts/WishlistContext.jsx';
 import Navbar from '@/components/Navbar.jsx';
 
 const ProductDetail = () => {
@@ -15,6 +16,9 @@ const ProductDetail = () => {
   const [error, setError] = useState(null);
   const [quantity, setQuantity] = useState(1);
   const [addedToCart, setAddedToCart] = useState(false);
+  const [selectedSize, setSelectedSize] = useState(null);
+  const [selectedColor, setSelectedColor] = useState(null);
+  const { addToWishlist } = useWishlist();
 
   useEffect(() => {
     const fetchProduct = async () => {
@@ -49,13 +53,19 @@ const ProductDetail = () => {
 
   const handleAddToCart = () => {
     if (!product) return;
-    
+    // Ensure options are selected if sizes exist
+    if (attributes.sizes && !selectedSize) {
+      setError('Please select a size');
+      return;
+    }
+
     addToCart({
       sku: product.sku,
       name: product.product_display_name,
       price: parseFloat(product.price),
       quantity: parseInt(quantity),
-      image: product.image_url
+      image: product.image_url,
+      selectedOptions: { size: selectedSize, color: selectedColor },
     });
     
     setAddedToCart(true);
@@ -171,6 +181,7 @@ const ProductDetail = () => {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 className="flex-1 flex items-center justify-center gap-2 py-3 border-2 border-gray-300 rounded-lg font-medium text-gray-700 hover:border-red-600 hover:text-red-600 transition-colors"
+              onClick={() => addToWishlist({ sku: product.sku, name: product.product_display_name, image: product.image_url })}
               >
                 <Heart size={20} />
                 Wishlist
@@ -252,7 +263,12 @@ const ProductDetail = () => {
                       Color
                     </label>
                     <div className="flex gap-3">
-                      <button className="px-4 py-2 border-2 border-gray-300 rounded-lg font-medium hover:border-red-600">
+                      <button
+                        onClick={() => setSelectedColor(product.base_colour)}
+                        className={`px-4 py-2 border-2 rounded-lg font-medium ${
+                          selectedColor === product.base_colour ? 'border-red-600 bg-red-50' : 'border-gray-300'
+                        }`}
+                      >
                         {product.base_colour}
                       </button>
                     </div>
@@ -265,14 +281,20 @@ const ProductDetail = () => {
                       Size
                     </label>
                     <div className="flex gap-3 flex-wrap">
-                      {attributes.sizes.split(',').map((size) => (
-                        <button
-                          key={size.trim()}
-                          className="px-4 py-2 border-2 border-gray-300 rounded-lg font-medium hover:border-red-600"
-                        >
-                          {size.trim()}
-                        </button>
-                      ))}
+                      {attributes.sizes.split(',').map((size) => {
+                        const s = size.trim();
+                        return (
+                          <button
+                            key={s}
+                            onClick={() => setSelectedSize(s)}
+                            className={`px-4 py-2 border-2 rounded-lg font-medium ${
+                              selectedSize === s ? 'border-red-600 bg-red-50' : 'border-gray-300 hover:border-red-600'
+                            }`}
+                          >
+                            {s}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

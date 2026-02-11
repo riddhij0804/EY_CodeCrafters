@@ -113,10 +113,12 @@ const CheckoutPage = () => {
               // Don't fail the payment for this - it's not critical
             }
 
-            // Redirect to chat after 3 seconds
+            // Redirect to order detail page after 1.5 seconds
             setTimeout(() => {
-              navigate('/chat');
-            }, 3000);
+              const oid = razorpayOrder.order_id || razorpayOrder.order?.id || razorpayOrder.order_id;
+              if (oid) navigate(`/orders/${oid}`);
+              else navigate('/orders');
+            }, 1500);
 
           } catch (verificationError) {
             console.error('Payment verification failed:', verificationError);
@@ -200,7 +202,7 @@ const CheckoutPage = () => {
               <h2 className="text-xl font-bold text-gray-900 mb-4">Order Items</h2>
               <div className="space-y-4">
                 {cartItems.map((item) => (
-                  <div key={item.sku} className="flex gap-4 items-center p-4 border border-gray-200 rounded-lg">
+                  <div key={item.id} className="flex gap-4 items-center p-4 border border-gray-200 rounded-lg">
                     {item.image && (
                       <img
                         src={item.image}
@@ -220,7 +222,7 @@ const CheckoutPage = () => {
                       <div className="flex items-center gap-4 mt-2">
                         <div className="flex items-center gap-2 border border-gray-300 rounded-lg">
                           <button
-                            onClick={() => updateQuantity(item.sku, item.qty - 1)}
+                            onClick={() => updateQuantity(item.id, item.qty - 1)}
                             className="p-1 hover:bg-gray-100 transition-colors rounded-l-lg"
                             disabled={item.qty <= 1}
                           >
@@ -228,7 +230,7 @@ const CheckoutPage = () => {
                           </button>
                           <span className="px-3 font-semibold">{item.qty}</span>
                           <button
-                            onClick={() => updateQuantity(item.sku, item.qty + 1)}
+                            onClick={() => updateQuantity(item.id, item.qty + 1)}
                             className="p-1 hover:bg-gray-100 transition-colors rounded-r-lg"
                           >
                             <Plus className="w-4 h-4" />
@@ -236,7 +238,7 @@ const CheckoutPage = () => {
                         </div>
 
                         <button
-                          onClick={() => removeFromCart(item.sku)}
+                          onClick={() => removeFromCart(item.id)}
                           className="text-red-600 hover:text-red-700 p-1 rounded-lg hover:bg-red-50 transition-colors"
                         >
                           <Trash2 className="w-4 h-4" />

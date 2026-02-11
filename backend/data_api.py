@@ -5,6 +5,8 @@ Endpoints for products, customers, orders, stores, inventory
 
 from pathlib import Path
 from typing import Dict, Any
+import os
+import requests
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,9 +30,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get('/health')
+async def health():
+    """Health endpoint for Data API."""
+    try:
+        # quick read to ensure data directory exists
+        ok = (DATA_DIR.exists())
+        return JSONResponse(status_code=200, content={"status": "healthy", "data_dir": str(DATA_DIR) if ok else None})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "unhealthy", "error": str(e)})
+
+
+@app.exception_handler(Exception)
+async def handle_exceptions(request, exc):
+    return JSONResponse(status_code=500, content={"status": "error", "message": "Internal server error"})
+
 # Data directory
 DATA_DIR = Path(__file__).parent / "data"
 IMAGES_DIR = DATA_DIR / "product_images"
+
+# Supabase config (optional)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
+FEATURE_SUPABASE_READ = os.getenv("FEATURE_SUPABASE_READ", "false").lower() in ("1", "true", "yes")
 
 # Mount static files for images at /images endpoint
 if IMAGES_DIR.exists():
@@ -59,6 +82,28 @@ def load_csv(filename):
         return cleaned
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error loading {filename}: {str(e)}")
+
+
+def fetch_products_from_supabase():
+    """Fetch all products from Supabase via REST API."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+
+    url = f"{SUPABASE_URL}/rest/v1/products?select=*"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        if resp.status_code in (200, 206):
+            return resp.json()
+        else:
+            print(f"⚠ Supabase products fetch failed: {resp.status_code} {resp.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"⚠ Exception fetching from Supabase: {e}")
+        return None
 
 
 @app.get("/")
@@ -90,23 +135,32 @@ async def get_products(
     min_rating: float = None
 ):
     """Get all products with optional filters (category, subcategory, gender, brand, price, rating)"""
-    products = load_csv("products.csv")
+    products = None
+
+    # Try Supabase first if enabled
+    if FEATURE_SUPABASE_READ:
+        supa = fetch_products_from_supabase()
+        if supa is not None:
+            products = supa
+
+    if products is None:
+        products = load_csv("products.csv")
     
     # Apply filters
     if category:
-        products = [p for p in products if p.get("category", "").lower() == category.lower()]
+        products = [p for p in products if (p.get("category") or p.get("masterCategory") or p.get("master_category") or "").lower() == category.lower()]
     if subcategory:
-        products = [p for p in products if p.get("sub_category", "").lower() == subcategory.lower()]
+        products = [p for p in products if (p.get("sub_category") or p.get("subCategory") or p.get("subCategory") or "").lower() == subcategory.lower()]
     if gender:
-        products = [p for p in products if p.get("gender", "").lower() == gender.lower()]
+        products = [p for p in products if (p.get("gender") or "").lower() == gender.lower()]
     if brand:
-        products = [p for p in products if p.get("brand", "").lower() == brand.lower()]
+        products = [p for p in products if (p.get("brand") or "").lower() == brand.lower()]
     if min_price is not None:
         products = [p for p in products if p.get("price") and float(p.get("price", 0)) >= min_price]
     if max_price is not None:
         products = [p for p in products if p.get("price") and float(p.get("price", 0)) <= max_price]
     if min_rating is not None:
-        products = [p for p in products if p.get("ratings") and float(p.get("ratings", 0)) >= min_rating]
+        products = [p for p in products if (p.get("ratings") or p.get("rating") is not None) and float(p.get("ratings", p.get("rating", 0))) >= min_rating]
     
     total = len(products)
     paginated = products[offset:offset + limit]
@@ -121,12 +175,26 @@ async def get_products(
 @app.get("/products/{sku}")
 async def get_product(request: Request, sku: str):
     """Get specific product by SKU"""
+    # Try Supabase first if enabled
+    if FEATURE_SUPABASE_READ and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            url = f"{SUPABASE_URL}/rest/v1/products?select=*&sku=eq.{sku}"
+            headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+            resp = requests.get(url, headers=headers, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data:
+                    return data[0]
+            # fallthrough to CSV
+        except Exception as e:
+            print(f"⚠ Supabase product fetch error: {e}")
+
     products = load_csv("products.csv")
-    product = next((p for p in products if p['sku'] == sku), None)
-    
+    product = next((p for p in products if str(p.get('sku')) == str(sku)), None)
+
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    
+
     return product
 
 @app.get("/customers")

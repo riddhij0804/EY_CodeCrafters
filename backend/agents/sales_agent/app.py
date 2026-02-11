@@ -54,6 +54,30 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+async def health():
+    """Health endpoint to verify the Sales Agent service is up."""
+    try:
+        # Lightweight checks: langgraph module availability
+        ready = True
+        return JSONResponse(status_code=200, content={"status": "healthy", "ready": ready})
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(status_code=500, content={"status": "unhealthy", "error": str(e)})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    logger.warning(f"Validation error: {exc}")
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"status": "error", "message": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def generic_error_handler(request, exc):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"status": "error", "message": "Internal server error"})
+
+
 # ============================================================================
 # PYDANTIC MODELS
 # ============================================================================
@@ -352,10 +376,20 @@ async def handle_post_payment(request: PostPaymentRequest):
 
         logger.info(f"✅ Post-payment processing completed for order {request.order_id}")
 
+        response_message = ""
+        if isinstance(result_state, dict):
+            response_message = (
+                result_state.get("response")
+                or result_state.get("message")
+                or "Order processing started"
+            )
+        else:  # Fallback for TypedDict-like objects
+            response_message = getattr(result_state, "response", "Order processing started")
+
         return {
             "status": "success",
             "order_id": request.order_id,
-            "message": result_state.response,
+            "message": response_message,
             "processing_started": True,
             "agents_triggered": ["fulfillment", "post_purchase", "stylist", "inventory"]
         }

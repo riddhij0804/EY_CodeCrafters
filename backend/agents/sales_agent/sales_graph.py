@@ -1143,6 +1143,24 @@ async def call_fulfillment_worker(state: SalesAgentState) -> SalesAgentState:
     
     state["worker_service"] = "fulfillment"
     state["worker_url"] = WORKER_SERVICES["fulfillment"]
+
+    # Incoming state can be either the TypedDict or a legacy dict from the
+    # post-payment trigger. Normalise keys for downstream access.
+    if "metadata" in state and "entities" not in state:
+        metadata = state.get("metadata", {})
+        state["entities"] = {
+            "order_id": metadata.get("order_id"),
+            "customer_id": metadata.get("customer_id"),
+            "source": metadata.get("source"),
+            "action": metadata.get("action"),
+            "trigger_agents": metadata.get("trigger_agents", []),
+        }
+    if "intent" not in state and "metadata" in state:
+        state["intent"] = state.get("metadata", {}).get("intent", "support")
+    if "confidence" not in state:
+        state["confidence"] = 1.0
+    if "intent_method" not in state:
+        state["intent_method"] = state.get("metadata", {}).get("intent_method", "post_payment_trigger")
     
     try:
         # Extract order_id from entities or message

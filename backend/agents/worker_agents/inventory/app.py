@@ -325,6 +325,32 @@ async def lifespan(app: FastAPI):
     # Startup
     print("🚀 Starting Inventory Agent...")
     print(f"✓ Redis connected: {redis_utils.check_redis_health()}")
+    # Print Supabase status (if configured)
+    try:
+        import sys
+        from pathlib import Path
+        backend_path = Path(__file__).resolve().parent.parent.parent.parent
+        if str(backend_path) not in sys.path:
+            sys.path.insert(0, str(backend_path))
+
+        from db import supabase_client
+
+        print(f"✓ Supabase URL present: {bool(supabase_client.SUPABASE_URL)}")
+        print(f"✓ Supabase read enabled: {supabase_client.FEATURE_SUPABASE_READ}")
+        print(f"✓ Supabase write enabled: {supabase_client.FEATURE_SUPABASE_WRITE}")
+
+        # Attempt a light read to verify connectivity
+        if supabase_client.is_enabled():
+            try:
+                _ = supabase_client.select("inventory", params="limit=1", columns="sku")
+                print("✓ Supabase read test OK")
+            except Exception as e:
+                print(f"⚠ Supabase read test failed: {e}")
+        else:
+            print("ℹ️ Supabase reads not enabled or misconfigured")
+
+    except Exception as e:
+        print(f"ℹ️ Supabase not configured or unavailable: {e}")
     
     # Start background task
     cleanup_task = asyncio.create_task(cleanup_expired_holds_task())

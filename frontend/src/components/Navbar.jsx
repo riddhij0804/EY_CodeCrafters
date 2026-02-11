@@ -1,12 +1,14 @@
 import { useNavigate } from 'react-router-dom';
-import { ShoppingCart, User } from 'lucide-react';
+import { ShoppingCart, User, Heart } from 'lucide-react';
 import { useCart } from '@/contexts/CartContext.jsx';
+import { useWishlist } from '@/contexts/WishlistContext.jsx';
 import { useRef, useState, useEffect } from 'react';
 import sessionStore from '@/lib/session';
 
 const Navbar = () => {
   const navigate = useNavigate();
   const { getCartCount } = useCart();
+  const { items: wishlistItems } = useWishlist();
   const [profile, setProfile] = useState(() => sessionStore.getProfile());
   const [customerPhone, setCustomerPhone] = useState(() => sessionStore.getPhone());
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -135,6 +137,19 @@ const Navbar = () => {
               )}
             </button>
 
+            <button
+              onClick={() => navigate('/wishlist')}
+              className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors"
+              aria-label="Wishlist"
+            >
+              <Heart className="w-5 h-5" />
+              {wishlistItems.length > 0 && (
+                <span className="absolute -top-1 -right-1 w-5 h-5 bg-yellow-400 text-red-700 text-xs rounded-full flex items-center justify-center font-semibold">
+                  {wishlistItems.length}
+                </span>
+              )}
+            </button>
+
             {profile && profileMenuOpen && (
               <div
                 ref={profileMenuRef}
@@ -166,6 +181,20 @@ const Navbar = () => {
                       <span className="text-red-600">{displayCity}</span>
                     </div>
                   )}
+                      <div className="pt-2 border-t border-red-100/40">
+                        <button
+                          onClick={() => { setProfileMenuOpen(false); navigate('/orders'); }}
+                          className="w-full text-left px-3 py-2 rounded hover:bg-red-50"
+                        >
+                          Orders
+                        </button>
+                        <button
+                          onClick={() => { setProfileMenuOpen(false); sessionStore.clearAll(); navigate('/login'); }}
+                          className="w-full text-left px-3 py-2 rounded text-red-700 hover:bg-red-50"
+                        >
+                          Logout
+                        </button>
+                      </div>
                 </div>
               </div>
             )}
