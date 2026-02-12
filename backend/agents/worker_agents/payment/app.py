@@ -4,7 +4,7 @@
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 import uvicorn
 import uuid
 from datetime import datetime
@@ -573,20 +573,21 @@ def _update_customer_records(
     timestamp: str,
     response_message: str,
     order_id: Optional[str],
-) -> str:
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Update customer records and return loyalty details."""
     if not customer_id:
-        return response_message
+        return response_message, None
     if not supabase_client.is_enabled() or not supabase_client.is_write_enabled():
-        return response_message
+        return response_message, None
 
     try:
         customer = supabase_client.select_one('customers', f'customer_id=eq.{customer_id}')
     except Exception as exc:
         logger.warning(f"⚠️  Supabase customer lookup failed: {exc}")
-        return response_message
+        return response_message, None
 
     if not customer:
-        return response_message
+        return response_message, None
 
     purchase_history = customer.get('purchase_history') or []
     if isinstance(purchase_history, str):
@@ -638,11 +639,16 @@ def _update_customer_records(
 
     items_purchased = previous_items + sum(_safe_qty(item.get('qty')) for item in normalized_items)
 
-    tier = old_tier
-    if loyalty_points >= Decimal("1000"):
+    # Tier calculation with new rules
+    points_int = int(loyalty_points.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if points_int >= 2000:
+        tier = 'platinum'
+    elif points_int >= 1000:
         tier = 'gold'
-    elif loyalty_points >= Decimal("500"):
+    elif points_int >= 500:
         tier = 'silver'
+    else:
+        tier = 'bronze'
 
     try:
         supabase_client.upsert('customers', {
@@ -655,16 +661,53 @@ def _update_customer_records(
         }, conflict_column='customer_id')
     except Exception as exc:
         logger.warning(f"⚠️  Failed to upsert customer metrics: {exc}")
-        return response_message
+        return response_message, None
 
     suffix = ""
     earned_points_display = loyalty_points_int - previous_points_int
     if earned_points_display > 0:
         suffix += f" | Earned {earned_points_display} loyalty points!"
     if tier != old_tier:
-        suffix += f" 🏆 Upgraded to {tier}!"
+        suffix += f" 🏆 Upgraded to {tier.capitalize()}!"
 
-    return response_message + suffix
+    # Calculate loyalty details for response
+    loyalty_details = _calculate_loyalty_details(
+        earned_points=earned_points_display,
+        total_points=loyalty_points_int,
+        old_tier=old_tier,
+        new_tier=tier
+    )
+
+    return response_message + suffix, loyalty_details
+
+
+def _calculate_loyalty_details(earned_points: int, total_points: int, old_tier: str, new_tier: str) -> Dict[str, Any]:
+    """Calculate loyalty details including points needed for next tier."""
+    tier_upgraded = old_tier != new_tier
+    
+    # Calculate points needed for next tier
+    if total_points >= 2000:
+        points_needed = 0  # Already at max tier
+        next_tier = "platinum"
+    elif total_points >= 1000:
+        points_needed = 2000 - total_points
+        next_tier = "platinum"
+    elif total_points >= 500:
+        points_needed = 1000 - total_points
+        next_tier = "gold"
+    else:
+        points_needed = 500 - total_points
+        next_tier = "silver"
+    
+    return {
+        "earned_points": earned_points,
+        "total_points": total_points,
+        "current_tier": new_tier,
+        "previous_tier": old_tier,
+        "tier_upgraded": tier_upgraded,
+        "points_needed": points_needed if points_needed > 0 else 0,
+        "next_tier": next_tier
+    }
 
 
 def _update_inventory(normalized_items: List[Dict[str, Any]], default_store: Optional[str] = None) -> None:
@@ -1081,8 +1124,9 @@ async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
         logger.warning(f"⚠️  Failed to ensure order {canonical_order_id}: {exc}")
 
     # Update customer purchase history, metrics, and inventory on payment success
+    loyalty_details = None
     try:
-        response_message = _update_customer_records(
+        response_message, loyalty_details = _update_customer_records(
             customer_id,
             normalized_items,
             float(amount_rupees),
@@ -1134,12 +1178,18 @@ async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
     user_key = payload.user_id or payment_id
     _store_transaction_safely(payment_id, transaction_payload, user_key, amount_rupees)
 
-    return {
+    response = {
         "status": "ok",
         "payment_id": payment_id,
         "order_id": canonical_order_id,
         "gateway_payment_id": payload.razorpay_payment_id,
     }
+    
+    # Include loyalty details if available
+    if loyalty_details:
+        response["loyalty"] = loyalty_details
+    
+    return response
 
 
 app.include_router(razorpay_router)

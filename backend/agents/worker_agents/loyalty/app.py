@@ -8,6 +8,12 @@ from typing import Optional
 import uvicorn
 from datetime import datetime
 import redis_utils
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from db import supabase_client
 
 app = FastAPI(
     title="Loyalty Agent",
@@ -142,9 +148,56 @@ async def get_user_points(user_id: str):
 async def get_user_tier(user_id: str):
     """Get complete tier information for a user including points, tier, and benefits"""
     try:
-        tier_info = redis_utils.get_user_tier_info(user_id)
-        return tier_info
+        print(f"🔍 Fetching loyalty info for user: {user_id}")
+        
+        # Always use Supabase as the primary source of truth
+        if supabase_client.is_enabled():
+            try:
+                customer = supabase_client.select_one('customers', f'customer_id=eq.{user_id}')
+                print(f"📊 Supabase customer data: {customer}")
+                
+                if customer:
+                    points = int(customer.get('loyalty_points', 0))
+                    tier = customer.get('loyalty_tier', 'bronze').capitalize()
+                    
+                    print(f"✅ Retrieved from Supabase - Points: {points}, Tier: {tier}")
+                    
+                    # Calculate tier info for benefits
+                    tier_data = redis_utils.calculate_tier(points)
+                    
+                    return {
+                        "user_id": user_id,
+                        "points": points,
+                        "tier": tier,
+                        "benefits": tier_data.get("benefits", {}),
+                        "next_tier": tier_data.get("next_tier"),
+                        "points_to_next_tier": tier_data.get("points_to_next_tier", 0),
+                        "source": "supabase"
+                    }
+                else:
+                    # Customer not found in Supabase, return default values
+                    print(f"⚠️ Customer {user_id} not found in Supabase, returning defaults")
+                    tier_data = redis_utils.calculate_tier(0)
+                    return {
+                        "user_id": user_id,
+                        "points": 0,
+                        "tier": "bronze",
+                        "benefits": tier_data.get("benefits", {}),
+                        "next_tier": tier_data.get("next_tier"),
+                        "points_to_next_tier": tier_data.get("points_to_next_tier", 0),
+                        "source": "default"
+                    }
+            except Exception as e:
+                print(f"❌ Error fetching from Supabase: {e}")
+                # Don't fallback to Redis, return error
+                raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
+        else:
+            print("⚠️ Supabase is not enabled")
+            raise HTTPException(status_code=503, detail="Supabase is not available")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"❌ Unexpected error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

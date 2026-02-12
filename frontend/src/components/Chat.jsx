@@ -331,13 +331,31 @@ const Chat = () => {
   // Loyalty Management
   const fetchLoyaltyPoints = async (user_id) => {
     try {
+      console.log('🔍 Fetching loyalty points for user:', user_id);
       const result = await getTierInfo(user_id);
+      console.log('📊 Loyalty data received:', result);
+      
       if (result && result.points !== undefined) {
-        setLoyaltyPoints(result.points);
-        setLoyaltyTier(result.tier || 'Bronze');
+        const points = parseInt(result.points) || 0;
+        const tier = result.tier || 'Bronze';
+        const tierCapitalized = tier.charAt(0).toUpperCase() + tier.slice(1);
+        
+        console.log(`✅ Setting loyalty state - Points: ${points}, Tier: ${tierCapitalized}, Source: ${result.source || 'unknown'}`);
+        
+        setLoyaltyPoints(points);
+        setLoyaltyTier(tierCapitalized);
+      } else {
+        console.warn('⚠️ No loyalty data in response, setting defaults');
+        setLoyaltyPoints(0);
+        setLoyaltyTier('Bronze');
       }
     } catch (error) {
-      console.error('Failed to fetch loyalty info:', error);
+      console.error('❌ Failed to fetch loyalty info:', error);
+      console.error('Error details:', {
+        message: error.message,
+        response: error.response,
+        stack: error.stack
+      });
       // Gracefully handle error - set defaults so UI doesn't break
       setLoyaltyPoints(0);
       setLoyaltyTier('Bronze');
@@ -951,25 +969,43 @@ const Chat = () => {
           },
         },
         handler: async (response) => {
+          console.log('💳 Razorpay payment handler triggered:', response);
           try {
+            // Get user ID for loyalty updates
+            const currentUserId = sessionInfo?.data?.customer_id || sessionInfo?.customer_id || customerProfile?.customer_id || sessionInfo?.phone || customerProfile?.phone_number;
+            console.log('👤 Current User ID:', currentUserId);
+            
             const verificationResult = await verifyRazorpayPayment({
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_order_id: response.razorpay_order_id,
               razorpay_signature: response.razorpay_signature,
               amount_rupees: parsedAmount,
-              user_id: sessionInfo?.data?.customer_id || sessionInfo?.customer_id || customerProfile?.customer_id || sessionInfo?.phone || customerProfile?.phone_number,
+              user_id: currentUserId,
               method: 'razorpay',
               order_id: orderResponse.order_id,
             });
-
-            // Refresh loyalty points after payment
-            await fetchLoyaltyPoints(userId);
+            
+            console.log('✅ Verification Result:', verificationResult);
 
             const canonicalOrderId =
               verificationResult?.order_id || normalizedDetails.orderId || response.razorpay_order_id;
             const canonicalPaymentId = verificationResult?.payment_id || response.razorpay_payment_id;
             const gatewayPaymentId =
               verificationResult?.gateway_payment_id || response.razorpay_payment_id;
+
+            // Extract loyalty details from verification result
+            const loyaltyData = verificationResult?.loyalty;
+            
+            // Update loyalty state directly from verification result
+            if (loyaltyData) {
+              setLoyaltyPoints(loyaltyData.total_points || 0);
+              setLoyaltyTier(loyaltyData.current_tier ? loyaltyData.current_tier.charAt(0).toUpperCase() + loyaltyData.current_tier.slice(1) : 'Bronze');
+            }
+            
+            // Also refresh from backend to ensure sync
+            if (currentUserId) {
+              await fetchLoyaltyPoints(currentUserId);
+            }
 
             // Show delivery window selection modal
             setDeliveryOrderId(canonicalOrderId);
@@ -978,12 +1014,21 @@ const Chat = () => {
             let successText =
               `✅ Payment of ₹${parsedAmount} received!\nOrder ID: ${canonicalOrderId}\nPayment ID: ${canonicalPaymentId}`;
             
-            // Add product-specific message and rewards
+            // Add loyalty message if available
+            if (loyaltyData) {
+              if (loyaltyData.tier_upgraded) {
+                successText += `\n\n🎉 Congratulations!\nYou've been upgraded to ${loyaltyData.current_tier.charAt(0).toUpperCase() + loyaltyData.current_tier.slice(1)} tier 🏆\nYou earned ${loyaltyData.earned_points} loyalty points!`;
+              } else {
+                successText += `\n\nYou earned ${loyaltyData.earned_points} loyalty points 🎉\nYou now have ${loyaltyData.total_points} points.`;
+                if (loyaltyData.points_needed > 0) {
+                  successText += `\nYou are just ${loyaltyData.points_needed} points away from ${loyaltyData.next_tier.charAt(0).toUpperCase() + loyaltyData.next_tier.slice(1)} tier.`;
+                }
+              }
+            }
+            
+            // Add product-specific message
             if (productDetails) {
               successText += `\n\n🎉 Purchase Complete!\n📦 ${productDetails.name || 'Selected item'}\n💰 Amount Paid: ₹${parsedAmount}`;
-              
-              // Show rewards earned (this will be updated by the payment service)
-              successText += `\n\n🎁 Rewards Earned:\n💎 Loyalty points added to your account!\n🏅 Check your updated tier status above.`;
             }
 
             const successMessage = {
@@ -993,8 +1038,24 @@ const Chat = () => {
               timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
               status: 'read',
             };
+            
+            // Display success message in chat
             setMessages((prev) => [...prev, successMessage]);
             await saveChatMessage('agent', successText);
+            
+            // Scroll to bottom to show the success message
+            setTimeout(() => {
+              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 100);
+            
+            // Log for debugging
+            console.log('💳 Payment Success:', {
+              orderId: canonicalOrderId,
+              paymentId: canonicalPaymentId,
+              loyaltyData,
+              successText,
+              messageAdded: true
+            });
             const displayName = productDetails?.name || '';
             const productLine = displayName ? ` for ${displayName}` : '';
             await appendAgentMessage(
@@ -1142,7 +1203,13 @@ const Chat = () => {
             setPendingCheckoutItem(null);
             setAwaitingConfirmation(false);
           } catch (verifyError) {
-            console.error('Payment verification failed:', verifyError);
+            console.error('❌ Payment verification failed:', verifyError);
+            console.error('Error details:', {
+              message: verifyError.message,
+              response: verifyError.response,
+              stack: verifyError.stack
+            });
+            
             const failureText = `⚠️ Payment captured but verification failed. Please contact support. (${verifyError.message || 'Unknown error'})`;
             const failMessage = {
               id: Date.now() + Math.random(),
