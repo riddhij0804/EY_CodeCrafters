@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCart } from "@/contexts/CartContext.jsx";
+import { resolveImageUrl } from "@/lib/utils.js";
 import { salesAgentService } from "@/services/salesAgentService.js";
 import heroModel from "../../assets/model.png";
 import sessionStore from "../../lib/session";
@@ -662,7 +663,7 @@ const LandingPage = () => {
                     <motion.img
                       whileHover={{ scale: 1.05 }}
                       transition={{ duration: 0.5 }}
-                      src={`http://localhost:8007/images/${product.image_url.split('/').pop()}`}
+                      src={resolveImageUrl(product.image_url) || '/assets/placeholder.png'}
                       alt={product.product_display_name}
                       className="w-full h-full object-cover"
                       onError={(e) => {

@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Dict, Any
 import os
 import requests
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -175,9 +179,11 @@ async def get_products(
     }
 
 @app.get("/products/{sku}")
-async def get_product(request: Request, sku: str):
+async def fetch_product_by_sku(request: Request, sku: str):
     """Get specific product by SKU using centralized product loader"""
-    product = get_product(sku)
+    from product_loader import get_product as fetch_product
+    
+    product = fetch_product(sku)
     
     if not product:
         raise HTTPException(status_code=404, detail=f"Product {sku} not found")

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import { useCart } from '@/contexts/CartContext.jsx';
+import { resolveImageUrl } from '@/lib/utils.js';
 
 import {
   createRazorpayOrder,
@@ -2034,7 +2035,7 @@ const Chat = () => {
                         {card.image && (
                           <div className="flex-shrink-0 w-32 h-32 rounded-lg overflow-hidden bg-white shadow-md">
                             <img
-                              src={card.image.startsWith('http') ? card.image : `http://localhost:8007/images/${card.image.split('/').pop()}`}
+                              src={resolveImageUrl(card.image)}
                               alt={card.name}
                               className="w-full h-full object-cover hover:scale-110 transition-transform duration-300"
                               onError={(e) => {
@@ -2046,7 +2047,12 @@ const Chat = () => {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
                             <div className="flex-1">
-                              <h4 className="font-bold text-base text-gray-900 leading-tight">{card.name}</h4>
+                              <a 
+                                href={`/products/${card.sku}`} 
+                                className="font-bold text-base text-blue-600 hover:text-blue-800 leading-tight underline cursor-pointer"
+                              >
+                                {card.name}
+                              </a>
                               <p className="text-xs text-gray-500 mt-1 font-mono">{card.sku}</p>
                             </div>
                             {card.price && (
@@ -2206,7 +2212,7 @@ const Chat = () => {
                             {item.image_url && (
                               <div className="flex-shrink-0 w-32 h-32 rounded-lg overflow-hidden bg-white shadow-md">
                                 <img 
-                                  src={item.image_url} 
+                                  src={resolveImageUrl(item.image_url)} 
                                   alt={item.name}
                                   className="w-full h-full object-cover hover:scale-110 transition-transform duration-300"
                                   onError={(e) => {

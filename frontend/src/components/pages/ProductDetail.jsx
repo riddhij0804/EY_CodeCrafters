@@ -4,6 +4,7 @@ import { ArrowLeft, ShoppingCart, Heart, Share2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useCart } from '@/contexts/CartContext.jsx';
 import { useWishlist } from '@/contexts/WishlistContext.jsx';
+import { resolveImageUrl } from '@/lib/utils.js';
 import API_ENDPOINTS from '@/config/api';
 import Navbar from '@/components/Navbar.jsx';
 
@@ -52,20 +53,35 @@ const ProductDetail = () => {
     }
   }, [sku]);
 
+  // Parse attributes safely
+  const getAttributes = () => {
+    let attrs = {};
+    try {
+      if (product && product.attributes && typeof product.attributes === 'string') {
+        attrs = JSON.parse(product.attributes.replace(/'/g, '"'));
+      }
+    } catch (e) {
+      console.log('Could not parse attributes');
+    }
+    return attrs;
+  };
+
   const handleAddToCart = () => {
     if (!product) return;
+    
+    const attrs = getAttributes();
     // Ensure options are selected if sizes exist
-    if (attributes.sizes && !selectedSize) {
+    if (attrs.sizes && !selectedSize) {
       setError('Please select a size');
       return;
     }
 
     addToCart({
       sku: product.sku,
-      name: product.product_display_name,
+      name: product.product_display_name || product.name,
       price: parseFloat(product.price),
       quantity: parseInt(quantity),
-      image: product.image_url,
+      image: product.image_url || product.image,
       selectedOptions: { size: selectedSize, color: selectedColor },
     });
     
@@ -122,15 +138,7 @@ const ProductDetail = () => {
     ? Math.round((1 - parseFloat(product.price) / parseFloat(product.msrp)) * 100)
     : 0;
 
-  // Parse attributes JSON if it exists
-  let attributes = {};
-  try {
-    if (product.attributes && typeof product.attributes === 'string') {
-      attributes = JSON.parse(product.attributes.replace(/'/g, '"'));
-    }
-  } catch (e) {
-    console.log('Could not parse attributes');
-  }
+  const attributes = getAttributes();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-yellow-50">
@@ -167,11 +175,11 @@ const ProductDetail = () => {
           >
             <div className="w-full aspect-square bg-gradient-to-br from-gray-100 to-gray-200 rounded-lg overflow-hidden flex items-center justify-center">
               <img
-                src={`http://localhost:8007/images/${product.image_url.split('/').pop()}`}
-                alt={product.product_display_name}
+                src={product.image_url ? resolveImageUrl(product.image_url) : 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%25%22 height=%22100%25%22%3E%3Crect fill=%22%23e5e7eb%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2216%22 fill=%22%23999%22%3ENo Product Image%3C/text%3E%3C/svg%3E'}
+                alt={product.product_display_name || 'Product'}
                 className="w-full h-full object-cover"
                 onError={(e) => {
-                  e.target.src = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%25%22 height=%22100%25%22%3E%3Crect fill=%22%23e5e7eb%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2216%22 fill=%22%23999%22%3EProduct Image Not Available%3C/text%3E%3C/svg%3E';
+                  e.target.src = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%25%22 height=%22100%25%22%3E%3Crect fill=%22%23e5e7eb%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2216%22 fill=%22%23999%22%3EImage Not Available%3C/text%3E%3C/svg%3E';
                 }}
               />
             </div>

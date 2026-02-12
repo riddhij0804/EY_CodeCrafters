@@ -8,6 +8,10 @@ import logging
 from typing import Optional, List, Dict, Any
 import pandas as pd
 from functools import lru_cache
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Try to import supabase, but don't fail if not available
 try:
@@ -19,9 +23,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Supabase configuration
+# Supabase configuration - get from environment
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 
 # CSV fallback paths
 CSV_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -40,15 +44,19 @@ class ProductLoader:
     
     def _init_supabase(self):
         """Initialize Supabase client if credentials available."""
-        if not SUPABASE_AVAILABLE or not SUPABASE_URL or not SUPABASE_KEY:
-            logger.info("Supabase not configured, using CSV fallback")
+        if not SUPABASE_AVAILABLE:
+            logger.warning("Supabase library not installed (supabase package not found)")
+            return
+        
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            logger.warning(f"Supabase not configured - URL: {'set' if SUPABASE_URL else 'empty'}, Key: {'set' if SUPABASE_KEY else 'empty'}")
             return
         
         try:
             self.supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-            logger.info("Supabase client initialized successfully")
+            logger.info("✓ Supabase client initialized successfully")
         except Exception as e:
-            logger.warning(f"Failed to initialize Supabase: {e}, falling back to CSV")
+            logger.error(f"✗ Failed to initialize Supabase: {e}")
             self.supabase_client = None
     
     def _load_csv_fallback(self):
@@ -64,8 +72,10 @@ class ProductLoader:
             logger.error(f"Error loading CSV: {e}")
             self.csv_df = pd.DataFrame()
     
-    def _normalize_product(self, product: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize product to standard schema."""
+    def _normalize_product(self, product: Dict[str, Any], source: str = "unknown") -> Dict[str, Any]:
+        """Normalize product to standard schema.
+        source: 'supabase' or 'csv' - helps determine how to handle image URLs
+        """
         def _clean(val, default=None):
             try:
                 if pd.isna(val):
@@ -83,7 +93,12 @@ class ProductLoader:
         raw_rating = _clean(product.get("rating", product.get("ratings", 0)), 0)
         raw_stock = _clean(product.get("stock", product.get("quantity", 0)), 0)
         raw_category = _clean(product.get("category", product.get("masterCategory", product.get("master_category", ""))), "Other")
-        raw_image = _clean(product.get("image_url", product.get("image", "")), "")
+        
+        # For images: Only use Supabase image URLs (which are already full URLs like https://...)
+        # CSV images are ignored - we only want Supabase images
+        raw_image = ""
+        if source == "supabase":
+            raw_image = _clean(product.get("image_url", product.get("image", "")), "")
 
         def _to_float(x, default=0.0):
             try:
@@ -136,13 +151,13 @@ class ProductLoader:
                 response = self.supabase_client.table("products").select("*").execute()
             
             products = response.data if hasattr(response, 'data') else []
-            return [self._normalize_product(p) for p in products]
+            return [self._normalize_product(p, source="supabase") for p in products]
         except Exception as e:
             logger.warning(f"Error fetching from Supabase: {e}")
             return []
     
     def _get_from_csv(self, sku: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Fetch products from CSV fallback."""
+        """Fetch products from CSV fallback (images excluded - CSV images ignored per requirements)."""
         if self.csv_df.empty:
             return []
         
@@ -152,7 +167,7 @@ class ProductLoader:
             else:
                 filtered = self.csv_df
             
-            return [self._normalize_product(row.to_dict()) for _, row in filtered.iterrows()]
+            return [self._normalize_product(row.to_dict(), source="csv") for _, row in filtered.iterrows()]
         except Exception as e:
             logger.error(f"Error fetching from CSV: {e}")
             return []

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Search, X, ChevronDown, ShoppingCart } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useCart } from '@/contexts/CartContext.jsx';
+import { resolveImageUrl } from '@/lib/utils.js';
 import Navbar from '@/components/Navbar.jsx';
 import { salesAgentService } from '@/services/salesAgentService';
 
@@ -401,7 +402,7 @@ const ProductCatalog = () => {
                       {/* Product Image */}
                       <div className="relative h-64 sm:h-72 bg-gradient-to-br from-gray-100 to-gray-200 overflow-hidden">
                         <img
-                          src={`http://localhost:8007/images/${product.image_url.split('/').pop()}`}
+                          src={resolveImageUrl(product.image_url) || '/assets/placeholder.png'}
                           alt={product.product_display_name}
                           className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
                           onError={(e) => {

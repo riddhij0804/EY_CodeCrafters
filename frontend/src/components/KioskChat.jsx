@@ -4,26 +4,19 @@ import { Send, Mic, MicOff, Package, MapPin, User, ShoppingBag, X, Award } from 
 import API_ENDPOINTS from '../config/api';
 import { getTierInfo } from '../services/loyaltyService';
 import sessionStore from '../lib/session';
+import { resolveImageUrl } from '../lib/utils.js';
 
 const SESSION_API = API_ENDPOINTS.SESSION_MANAGER;
 const SALES_API = API_ENDPOINTS.SALES_AGENT;
 
-// Convert image paths to asset URLs
-const toAssetUrl = (path) => {
-  if (!path) return null;
-  if (path.startsWith('http://') || path.startsWith('https://')) return path;
-  if (path.startsWith('data:')) return path;
-  const cleaned = path.replace(/\\/g, '/').replace(/^\/+/, '');
-  return `/assets/${cleaned}`;
-};
-
+// Resolve card images - returns full URL for image display
 const resolveCardImage = (card) => {
   if (!card) return null;
-  if (card.image) return toAssetUrl(card.image);
-  if (card.primary_image) return toAssetUrl(card.primary_image);
-  if (card.image_url) return toAssetUrl(card.image_url);
+  if (card.image) return resolveImageUrl(card.image);
+  if (card.primary_image) return resolveImageUrl(card.primary_image);
+  if (card.image_url) return resolveImageUrl(card.image_url);
   if (Array.isArray(card.image_urls) && card.image_urls.length > 0) {
-    return toAssetUrl(card.image_urls[0]);
+    return resolveImageUrl(card.image_urls[0]);
   }
   return null;
 };
@@ -116,37 +109,49 @@ const KioskChat = () => {
               </div>
             )}
             <div className="flex-1">
-              {card.personalized_reason ? (
-                <>
-                  {card.personalized_reason.length > 120 && !expandedCards.has('featured')
-                    ? `${card.personalized_reason.slice(0,110)}... `
-                    : card.personalized_reason}
-                  {card.personalized_reason.length > 120 && (
-                    <button
-                      onClick={() => toggleExpandCard('featured')}
-                      className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
-                    >
-                      {expandedCards.has('featured') ? 'Show less' : 'Show more'}
-                    </button>
-                  )}
-                </>
-              ) : card.description ? (
-                <>
-                  {card.description.length > 120 && !expandedCards.has('featured')
-                    ? `${card.description.slice(0,110)}... `
-                    : card.description}
-                  {card.description.length > 120 && (
-                    <button
-                      onClick={() => toggleExpandCard('featured')}
-                      className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
-                    >
-                      {expandedCards.has('featured') ? 'Show less' : 'Show more'}
-                    </button>
-                  )}
-                </>
-              ) : (
-                <span className="text-gray-400">Top trending for you</span>
-              )}
+              <a href={`/products/${card.sku}`} className="font-semibold text-sm text-blue-600 hover:text-blue-800 underline cursor-pointer">
+                {card.name}
+              </a>
+              {card.price && <p className="text-sm font-bold text-green-600 mt-1">₹{card.price}</p>}
+              <div className="mt-2 text-xs text-gray-500">
+                {card.personalized_reason ? (
+                  <>
+                    {card.personalized_reason.length > 120 && !expandedCards.has('featured')
+                      ? `${card.personalized_reason.slice(0,110)}... `
+                      : card.personalized_reason}
+                    {card.personalized_reason.length > 120 && (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          toggleExpandCard('featured');
+                        }}
+                        className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
+                      >
+                        {expandedCards.has('featured') ? 'Show less' : 'Show more'}
+                      </button>
+                    )}
+                  </>
+                ) : card.description ? (
+                  <>
+                    {card.description.length > 120 && !expandedCards.has('featured')
+                      ? `${card.description.slice(0,110)}... `
+                      : card.description}
+                    {card.description.length > 120 && (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          toggleExpandCard('featured');
+                        }}
+                        className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
+                      >
+                        {expandedCards.has('featured') ? 'Show less' : 'Show more'}
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-gray-400">Top trending for you</span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -670,23 +675,22 @@ const KioskChat = () => {
                   <div className="mt-3 space-y-3">
                     {message.cards.map((card, idx) => {
                       const cardImage = resolveCardImage(card);
-                      const handleCardClick = () => {
-                        if (card.sku) {
-                          navigate(`/products/${card.sku}`);
-                        }
-                      };
                       return (
                         <div 
                           key={idx} 
-                          className="border border-gray-200 rounded-lg p-3 bg-gray-50 cursor-pointer hover:shadow-md hover:bg-gray-100 transition-all"
-                          onClick={handleCardClick}
+                          className="border border-gray-200 rounded-lg p-3 bg-gray-50 hover:shadow-md hover:bg-gray-100 transition-all"
                         >
                           <div className="flex gap-3">
                             {cardImage && (
                               <img src={cardImage} alt={card.name} className="w-20 h-20 object-cover rounded" onError={(e)=>e.target.style.display='none'} />
                             )}
                             <div className="flex-1">
-                            <h4 className="font-semibold text-sm text-gray-900">{card.name}</h4>
+                            <a 
+                              href={`/products/${card.sku}`}
+                              className="font-semibold text-sm text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                            >
+                              {card.name}
+                            </a>
                             <p className="text-xs text-gray-600 mt-1">{card.sku}</p>
                             {card.price && (<p className="text-sm font-bold text-green-600 mt-1">₹{card.price}</p>)}
 
@@ -699,7 +703,10 @@ const KioskChat = () => {
                                       : card.personalized_reason}
                                     {card.personalized_reason.length > 240 && (
                                       <button
-                                        onClick={() => toggleExpandCard(`${message.id}-${idx}-pr`)}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          toggleExpandCard(`${message.id}-${idx}-pr`);
+                                        }}
                                         className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
                                       >
                                         {expandedCards.has(`${message.id}-${idx}-pr`) ? 'Show less' : 'Show more'}
@@ -721,7 +728,10 @@ const KioskChat = () => {
                                             {short ? `"${gm.slice(0,220)}..." ` : `"${gm}"`}
                                             {gm.length > 240 && (
                                               <button
-                                                onClick={() => toggleExpandCard(`${message.id}-${idx}-gift`)}
+                                                onClick={(e) => {
+                                                  e.preventDefault();
+                                                  toggleExpandCard(`${message.id}-${idx}-gift`);
+                                                }}
                                                 className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
                                               >
                                                 {expandedCards.has(`${message.id}-${idx}-gift`) ? 'Show less' : 'Show more'}
@@ -741,7 +751,10 @@ const KioskChat = () => {
                                       : card.description}
                                     {card.description.length > 240 && (
                                       <button
-                                        onClick={() => toggleExpandCard(`${message.id}-${idx}`)}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          toggleExpandCard(`${message.id}-${idx}`);
+                                        }}
                                         className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
                                       >
                                         {expandedCards.has(`${message.id}-${idx}`) ? 'Show less' : 'Show more'}
