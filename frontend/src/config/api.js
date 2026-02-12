@@ -10,6 +10,13 @@ export const API_ENDPOINTS = {
   SESSION_UPDATE: `${API_BASE_URL}:8000/session/update`,
   SESSION_LOGIN: `${API_BASE_URL}:8000/session/login`,
   
+  // Authentication (Password-based - Port 8000)
+  AUTH_SIGNUP: `${API_BASE_URL}:8000/auth/signup`,
+  AUTH_LOGIN: `${API_BASE_URL}:8000/auth/login`,
+  AUTH_LOGOUT: `${API_BASE_URL}:8000/auth/logout`,
+  AUTH_QR_INIT: `${API_BASE_URL}:8000/auth/qr-init`,
+  AUTH_QR_VERIFY: `${API_BASE_URL}:8000/auth/qr-verify`,
+  
   // Sales Agent with Orchestration (Port 8010)
   SALES_AGENT: `${API_BASE_URL}:8010`,
   SEND_MESSAGE: `${API_BASE_URL}:8010/api/message`,
@@ -79,7 +86,7 @@ export const API_ENDPOINTS = {
   STYLIST_SEASONAL: `${API_BASE_URL}:8006/stylist/seasonal-styling`,
   STYLIST_FIT_FEEDBACK: `${API_BASE_URL}:8006/stylist/fit-feedback`,
   
-  // Data API (CSV Data)
+  // Data API (CSV Data + Supabase Products)
   DATA_API: `${API_BASE_URL}:8007`,
   DATA_PRODUCTS: `${API_BASE_URL}:8007/products`,
   DATA_CUSTOMERS: `${API_BASE_URL}:8007/customers`,
@@ -92,9 +99,8 @@ export const API_ENDPOINTS = {
   RECOMMENDATION: `${API_BASE_URL}:8008`,
   RECOMMENDATION_PERSONALIZED: `${API_BASE_URL}:8008/recommend`,
   
-  // Ambient Commerce (Visual Search)
-  AMBIENT_COMMERCE: `${API_BASE_URL}:8009`,
-  VISUAL_SEARCH_IMAGE: `${API_BASE_URL}:8009/search/image`,
+  // Virtual Circles (Community Chat)
+  VIRTUAL_CIRCLES: `${API_BASE_URL}:8007`
 };
 
 // Helper function for API calls with error handling

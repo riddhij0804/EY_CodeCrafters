@@ -5,6 +5,7 @@ import MainApp from './components/MainApp';
 import KioskChat from './components/KioskChat';
 import LandingPage from './components/pages/LandingPage';
 import LoginPage from './components/pages/LoginPage';
+import ProfilePage from './components/pages/ProfilePage';
 import CartPage from './components/pages/CartPage';
 import CheckoutPage from './components/pages/CheckoutPage';
 import ProductCatalog from './components/pages/ProductCatalog';
@@ -22,6 +23,7 @@ function App() {
           <Routes>
             <Route path="/" element={<LandingPage />} />
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
             <Route path="/chat" element={<MainApp />} />
             <Route path="/kiosk" element={<KioskChat />} />
             <Route path="/products" element={<ProductCatalog />} />

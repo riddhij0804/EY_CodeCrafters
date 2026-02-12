@@ -2032,11 +2032,35 @@ const Chat = () => {
               {message.cards && message.cards.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {message.cards.map((card, idx) => (
-                    <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors">
+                    <div 
+                      key={idx} 
+                      className="border border-gray-200 rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors"
+                    >
                       <div className="flex gap-3">
-                        {/* image display removed */}
+                        {/* Product Image */}
+                        {(card.image || card.image_url) && (
+                          <div className="w-20 h-20 flex-shrink-0 rounded-lg overflow-hidden bg-white border border-gray-200">
+                            <img 
+                              src={card.image || card.image_url} 
+                              alt={card.name}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                e.target.style.display = 'none';
+                              }}
+                            />
+                          </div>
+                        )}
                         <div className="flex-1">
-                          <h4 className="font-semibold text-sm text-gray-900">{card.name}</h4>
+                          {/* Product Title - Only this has a link */}
+                          <a
+                            href={card.sku ? `/products/${card.sku}` : '#'}
+                            onClick={(e) => {
+                              if (!card.sku) e.preventDefault();
+                            }}
+                            className="font-semibold text-sm text-gray-900 hover:text-[#00796b] hover:underline cursor-pointer"
+                          >
+                            {card.name}
+                          </a>
                           <p className="text-xs text-gray-600 mt-1">{card.sku}</p>
                           {card.price && (
                             <p className="text-sm font-bold text-green-600 mt-1">₹{card.price}</p>
@@ -2052,10 +2076,13 @@ const Chat = () => {
                                     : renderMessageText(card.personalized_reason)}
                                   {card.personalized_reason.length > 240 && (
                                     <button
-                                      onClick={() => toggleExpandCard(`${message.id}-${idx}-pr`)}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        toggleExpandCard(`${message.id}-${idx}-pr`);
+                                      }}
                                       className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
                                     >
-                                      {expandedCards.has(`${message.id}-${idx}-pr`) ? 'Show less' : 'Show more'}
+                                      {expandedCards.has(`${message.id}-${idx}-pr`) ? 'Learn less' : 'Learn more'}
                                     </button>
                                   )}
                                 </div>
@@ -2075,10 +2102,13 @@ const Chat = () => {
                                           {short ? `"${gm.slice(0,220)}..." ` : `"${gm}"`}
                                           {gm.length > 240 && (
                                             <button
-                                              onClick={() => toggleExpandCard(`${message.id}-${idx}-gift`)}
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                toggleExpandCard(`${message.id}-${idx}-gift`);
+                                              }}
                                               className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
                                             >
-                                              {expandedCards.has(`${message.id}-${idx}-gift`) ? 'Show less' : 'Show more'}
+                                              {expandedCards.has(`${message.id}-${idx}-gift`) ? 'Learn less' : 'Learn more'}
                                             </button>
                                           )}
                                         </>
@@ -2096,10 +2126,13 @@ const Chat = () => {
                                     : renderMessageText(card.description)}
                                   {card.description.length > 240 && (
                                     <button
-                                      onClick={() => toggleExpandCard(`${message.id}-${idx}`)}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        toggleExpandCard(`${message.id}-${idx}`);
+                                      }}
                                       className="ml-1 text-xs text-[#00796b] font-medium hover:underline"
                                     >
-                                      {expandedCards.has(`${message.id}-${idx}`) ? 'Show less' : 'Show more'}
+                                      {expandedCards.has(`${message.id}-${idx}`) ? 'Learn less' : 'Learn more'}
                                     </button>
                                   )}
                                 </>

@@ -4,6 +4,7 @@ import { ArrowLeft, ShoppingCart, Heart, Share2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useCart } from '@/contexts/CartContext.jsx';
 import { useWishlist } from '@/contexts/WishlistContext.jsx';
+import API_ENDPOINTS from '@/config/api';
 import Navbar from '@/components/Navbar.jsx';
 
 const ProductDetail = () => {
@@ -24,8 +25,8 @@ const ProductDetail = () => {
     const fetchProduct = async () => {
       try {
         setLoading(true);
-        // Fetch product directly by SKU using the specific endpoint
-        const response = await fetch(`http://localhost:8007/products/${sku}`);
+        // Fetch product directly by SKU using the proper API endpoint (which uses Supabase first, CSV fallback)
+        const response = await fetch(`${API_ENDPOINTS.DATA_PRODUCTS}/${sku}`);
         
         if (!response.ok) {
           if (response.status === 404) {

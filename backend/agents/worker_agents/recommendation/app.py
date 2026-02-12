@@ -3,6 +3,7 @@
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import uvicorn
@@ -15,6 +16,13 @@ from datetime import datetime
 import logging
 import os
 from dotenv import load_dotenv
+
+# Import centralized product loader
+import sys
+_backend_path = Path(__file__).resolve().parents[4] / "backend"
+if str(_backend_path) not in sys.path:
+    sys.path.insert(0, str(_backend_path))
+from product_loader import get_product_loader, get_all_products
 
 # Image resolver for local assets
 try:
@@ -189,6 +197,8 @@ def load_csv_fallback():
             products = products.rename(columns={"product_display_name": "ProductDisplayName"})
         if "sub_category" in products.columns and "subcategory" not in products.columns:
             products = products.rename(columns={"sub_category": "subcategory"})
+        if "category" not in products.columns and "master_category" in products.columns:
+            products = products.rename(columns={"master_category": "category"})
         
         return products, customers, orders, inventory
     except Exception as e:
@@ -249,6 +259,43 @@ def load_data_with_supabase_fallback():
     if products_df is None or products_df.empty:
         products_df = csv_products
         logger.info(f"📦 Using CSV fallback: {len(products_df)} products")
+    
+    # Ensure products_df has required fields for Kiosk/WhatsApp UI and filtering
+    # Add image_url if missing - use proper pandas syntax to check for image column
+    if 'image_url' not in products_df.columns:
+        if 'image' in products_df.columns:
+            products_df['image_url'] = products_df['image']
+        else:
+            products_df['image_url'] = ''
+    
+    # Add product_url if missing (for product click navigation)
+    if 'product_url' not in products_df.columns:
+        products_df['product_url'] = '/products/' + products_df['sku'].astype(str)
+    
+    # Ensure 'category' column exists (critical for filter_products_by_intent)
+    if 'category' not in products_df.columns:
+        if 'masterCategory' in products_df.columns:
+            products_df['category'] = products_df['masterCategory']
+        elif 'master_category' in products_df.columns:
+            products_df['category'] = products_df['master_category']
+        else:
+            products_df['category'] = 'Other'
+    
+    # Ensure 'subcategory' column exists
+    if 'subcategory' not in products_df.columns:
+        if 'sub_category' in products_df.columns:
+            products_df['subcategory'] = products_df['sub_category']
+        else:
+            products_df['subcategory'] = 'Uncategorized'
+    
+    # Ensure 'ProductDisplayName' column exists
+    if 'ProductDisplayName' not in products_df.columns:
+        if 'product_display_name' in products_df.columns:
+            products_df['ProductDisplayName'] = products_df['product_display_name']
+        elif 'name' in products_df.columns:
+            products_df['ProductDisplayName'] = products_df['name']
+        else:
+            products_df['ProductDisplayName'] = 'Product'
     
     if customers_df is None or customers_df.empty:
         customers_df = csv_customers
@@ -425,40 +472,52 @@ def get_past_purchase_skus(customer_profile: Dict) -> List[str]:
 
 def get_inventory_availability(sku: str) -> bool:
     """Check if product is in stock (online or any store)"""
-    inventory = inventory_df[inventory_df['sku'] == sku]
-    
-    if inventory.empty:
-        return False
-    # Determine the quantity column name (support multiple CSV variants)
-    possible_qty_cols = ['qty', 'quantity', 'available_qty', 'available', 'stock']
-    qty_col = None
-    for col in possible_qty_cols:
-        if col in inventory.columns:
-            qty_col = col
-            break
-
-    # If no known qty column, try to pick the first numeric column as fallback
-    if qty_col is None:
-        numeric_cols = inventory.select_dtypes(include='number').columns.tolist()
-        # prefer 'quantity' like names if present in numeric_cols
-        for c in numeric_cols:
-            if 'quant' in c.lower() or 'qty' in c.lower() or 'stock' in c.lower() or 'available' in c.lower():
-                qty_col = c
-                break
-        if qty_col is None and numeric_cols:
-            qty_col = numeric_cols[0]
-
-    if qty_col is None:
-        # No usable quantity column found; log and assume out of stock to be safe
-        logger.warning(f"No quantity column found in inventory for SKU {sku}; available columns: {inventory.columns.tolist()}")
-        return False
-
     try:
+        # If inventory_df is empty/not loaded, assume in stock (don't filter out products)
+        if inventory_df is None or inventory_df.empty:
+            logger.debug(f"Inventory data not loaded, assuming SKU {sku} is in stock")
+            return True
+        
+        inventory = inventory_df[inventory_df['sku'] == sku]
+        
+        if inventory.empty:
+            # SKU not in inventory table - assume in stock rather than filtering it out
+            logger.debug(f"SKU {sku} not found in inventory, assuming in stock")
+            return True
+        
+        # Determine the quantity column name (support multiple CSV variants)
+        possible_qty_cols = ['qty', 'quantity', 'available_qty', 'available', 'stock']
+        qty_col = None
+        for col in possible_qty_cols:
+            if col in inventory.columns:
+                qty_col = col
+                break
+
+        # If no known qty column, try to pick the first numeric column as fallback
+        if qty_col is None:
+            numeric_cols = inventory.select_dtypes(include='number').columns.tolist()
+            # prefer 'quantity' like names if present in numeric_cols
+            for c in numeric_cols:
+                if 'quant' in c.lower() or 'qty' in c.lower() or 'stock' in c.lower() or 'available' in c.lower():
+                    qty_col = c
+                    break
+            if qty_col is None and numeric_cols:
+                qty_col = numeric_cols[0]
+
+        if qty_col is None:
+            # No usable quantity column found; assume in stock
+            logger.debug(f"No quantity column found for SKU {sku}, assuming in stock")
+            return True
+
         total_stock = inventory[qty_col].astype(float).sum()
-        return total_stock > 0
-    except Exception:
-        logger.exception(f"Failed to compute total stock using column '{qty_col}' for SKU {sku}")
-        return False
+        result = total_stock > 0
+        if not result:
+            logger.debug(f"SKU {sku} has zero stock, marking out of stock")
+        return result
+    except Exception as e:
+        # On any error, assume in stock rather than filtering products out
+        logger.warning(f"Error checking inventory for SKU {sku}: {e}, assuming in stock")
+        return True
 
 
 def filter_products_by_intent(
@@ -468,6 +527,25 @@ def filter_products_by_intent(
     """Filter products based on user intent and customer profile"""
     
     filtered = products_df.copy()
+    
+    # Safeguard: ensure required columns exist to prevent KeyError during filtering
+    required_columns = ['category', 'subcategory', 'ProductDisplayName', 'price', 'attributes', 'brand', 'ratings']
+    for col in required_columns:
+        if col not in filtered.columns:
+            if col == 'category':
+                filtered[col] = filtered.get('masterCategory', 'Other') if 'masterCategory' in filtered.columns else 'Other'
+            elif col == 'subcategory':
+                filtered[col] = filtered.get('sub_category', 'Uncategorized') if 'sub_category' in filtered.columns else 'Uncategorized'
+            elif col == 'ProductDisplayName':
+                filtered[col] = filtered.get('product_display_name', filtered.get('name', 'Unknown'))
+            elif col == 'price':
+                filtered[col] = 0.0
+            elif col == 'attributes':
+                filtered[col] = '{}'
+            elif col == 'brand':
+                filtered[col] = 'Unknown'
+            elif col == 'ratings':
+                filtered[col] = 0.0
     
     # Filter by gender - prioritize intent gender over customer gender
     target_gender = intent.get('gender', '').lower() if intent.get('gender') else customer_profile.get('gender', '').lower()
@@ -941,8 +1019,10 @@ async def _mode_normal(request: RecommendationRequest, customer_profile: Dict, p
             'price': float(product['price']),
             'rating': float(product['ratings']),
             'in_stock': True,
-            'image_url': _resolved_image(product.get('image_url')),
-            'personalized_reason': reason
+            'image': _resolved_image(product.get('image_url') or product.get('image') or ''),
+            'image_url': _resolved_image(product.get('image_url') or product.get('image') or ''),
+            'personalized_reason': reason,
+            'description': product.get('description', '')
         })
     
     return recommendations
@@ -1191,10 +1271,12 @@ Write a genuine, emotional message that the giver would write on a gift card. Be
             'price': float(product['price']),
             'rating': float(product['ratings']),
             'in_stock': True,
-            'image_url': _resolved_image(product.get('image_url')),
+            'image': _resolved_image(product.get('image_url') or product.get('image') or ''),
+            'image_url': _resolved_image(product.get('image_url') or product.get('image') or ''),
             'personalized_reason': gift_reason,
             'gift_message': gift_message,
-            'gift_suitability': suitability
+            'gift_suitability': suitability,
+            'description': product.get('description', '')
         })
     
     return recommendations
@@ -1374,9 +1456,11 @@ Explain why they'll likely need this next based on their style. Be specific and 
             'price': float(product['price']),
             'rating': float(product['ratings']),
             'in_stock': True,
-            'image_url': _resolved_image(product.get('image_url')),
+            'image': _resolved_image(product.get('image_url') or product.get('image') or ''),
+            'image_url': _resolved_image(product.get('image_url') or product.get('image') or ''),
             'personalized_reason': predictive_reason,
-            'trend_capsule': True
+            'trend_capsule': True,
+            'description': product.get('description', '')
         })
     
     return recommendations

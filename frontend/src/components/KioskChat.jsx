@@ -8,6 +8,15 @@ import sessionStore from '../lib/session';
 const SESSION_API = API_ENDPOINTS.SESSION_MANAGER;
 const SALES_API = API_ENDPOINTS.SALES_AGENT;
 
+// Convert image paths to asset URLs
+const toAssetUrl = (path) => {
+  if (!path) return null;
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  if (path.startsWith('data:')) return path;
+  const cleaned = path.replace(/\\/g, '/').replace(/^\/+/, '');
+  return `/assets/${cleaned}`;
+};
+
 const resolveCardImage = (card) => {
   if (!card) return null;
   if (card.image) return toAssetUrl(card.image);
@@ -159,9 +168,10 @@ const KioskChat = () => {
       const profile = sessionStore.getProfile();
       const storedToken = sessionStore.getSessionToken();
 
+      // If no login session exists, redirect to login (but don't clear other sessions)
       if (!phone || !profile) {
-        sessionStore.clearAll();
-        navigate('/login');
+        navigate('/login', { state: { redirectTo: '/kiosk' } });
+        setIsLoadingSession(false);
         return;
       }
 
@@ -660,8 +670,17 @@ const KioskChat = () => {
                   <div className="mt-3 space-y-3">
                     {message.cards.map((card, idx) => {
                       const cardImage = resolveCardImage(card);
+                      const handleCardClick = () => {
+                        if (card.sku) {
+                          navigate(`/products/${card.sku}`);
+                        }
+                      };
                       return (
-                        <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                        <div 
+                          key={idx} 
+                          className="border border-gray-200 rounded-lg p-3 bg-gray-50 cursor-pointer hover:shadow-md hover:bg-gray-100 transition-all"
+                          onClick={handleCardClick}
+                        >
                           <div className="flex gap-3">
                             {cardImage && (
                               <img src={cardImage} alt={card.name} className="w-20 h-20 object-cover rounded" onError={(e)=>e.target.style.display='none'} />

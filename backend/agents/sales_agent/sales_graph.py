@@ -71,6 +71,13 @@ try:
             products_df = products_df.rename(columns={"product_display_name": "ProductDisplayName"})
         if "sub_category" in products_df.columns and "subcategory" not in products_df.columns:
             products_df = products_df.rename(columns={"sub_category": "subcategory"})
+        
+        # Ensure product URLs are set for Kiosk/WhatsApp UI
+        if 'image_url' not in products_df.columns and 'image' in products_df.columns:
+            products_df['image_url'] = products_df['image']
+        if 'product_url' not in products_df.columns:
+            products_df['product_url'] = '/products/' + products_df['sku'].astype(str)
+        
         # Create lowercase name → SKU mapping for case-insensitive lookup
         _product_name_to_sku = dict(zip(
             products_df['ProductDisplayName'].str.lower(), 
@@ -91,7 +98,7 @@ WORKER_SERVICES = {
     "fulfillment": "http://localhost:8004",
     "post_purchase": "http://localhost:8005",
     "stylist": "http://localhost:8006",
-    "virtual_circles": "http://localhost:8009",  # Virtual Circles (Community Chat)
+    "virtual_circles": "http://localhost:8007",  # Virtual Circles (Community Chat) - now on correct port  # Virtual Circles (Community Chat)
     "ambient_commerce": os.getenv("AMBIENT_COMMERCE_URL", "http://localhost:8007"),
 }
 
@@ -698,7 +705,7 @@ async def call_recommendation_worker(state: SalesAgentState) -> SalesAgentState:
         
         # Build payload for recommendation API
         payload = {
-            "customer_id": customer_id,
+            "customer_id": str(customer_id),  # Ensure string type for API validation
             "mode": "normal",  # Default mode
             "intent": state["entities"],
             "current_cart_skus": state["metadata"].get("cart_skus", []),

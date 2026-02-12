@@ -10,10 +10,13 @@ import requests
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 import uvicorn
+
+# Import centralized product loader
+from product_loader import get_product, get_all_products, get_products_by_category, search_products
 
 app = FastAPI(
     title="Data API",
@@ -64,6 +67,7 @@ if IMAGES_DIR.exists():
 def load_csv(filename):
     """Load CSV file and return as list of dictionaries"""
     try:
+        import math
         df = pd.read_csv(DATA_DIR / filename)
         records = df.to_dict(orient="records")
         
@@ -72,10 +76,16 @@ def load_csv(filename):
         for record in records:
             clean_record = {}
             for key, value in record.items():
-                # Check if value is NaN and convert to None
-                if pd.isna(value):
-                    clean_record[key] = None
-                else:
+                # Check if value is NaN/None and handle all cases
+                try:
+                    if pd.isna(value):
+                        clean_record[key] = None
+                    elif isinstance(value, float) and math.isnan(value):
+                        clean_record[key] = None
+                    else:
+                        clean_record[key] = value
+                except (TypeError, ValueError):
+                    # If any error in checking, just use the value
                     clean_record[key] = value
             cleaned.append(clean_record)
         
@@ -134,33 +144,25 @@ async def get_products(
     max_price: int = None,
     min_rating: float = None
 ):
-    """Get all products with optional filters (category, subcategory, gender, brand, price, rating)"""
-    products = None
-
-    # Try Supabase first if enabled
-    if FEATURE_SUPABASE_READ:
-        supa = fetch_products_from_supabase()
-        if supa is not None:
-            products = supa
-
-    if products is None:
-        products = load_csv("products.csv")
+    """Get all products with optional filters using centralized product loader"""
+    # Get all products from centralized loader (Supabase first, CSV fallback)
+    products = get_all_products(limit=10000, offset=0)
     
     # Apply filters
     if category:
-        products = [p for p in products if (p.get("category") or p.get("masterCategory") or p.get("master_category") or "").lower() == category.lower()]
+        products = [p for p in products if (p.get("category") or "").lower() == category.lower()]
     if subcategory:
-        products = [p for p in products if (p.get("sub_category") or p.get("subCategory") or p.get("subCategory") or "").lower() == subcategory.lower()]
+        products = [p for p in products if (p.get("subcategory") or "").lower() == subcategory.lower()]
     if gender:
         products = [p for p in products if (p.get("gender") or "").lower() == gender.lower()]
     if brand:
         products = [p for p in products if (p.get("brand") or "").lower() == brand.lower()]
     if min_price is not None:
-        products = [p for p in products if p.get("price") and float(p.get("price", 0)) >= min_price]
+        products = [p for p in products if float(p.get("price", 0)) >= min_price]
     if max_price is not None:
-        products = [p for p in products if p.get("price") and float(p.get("price", 0)) <= max_price]
+        products = [p for p in products if float(p.get("price", 0)) <= max_price]
     if min_rating is not None:
-        products = [p for p in products if (p.get("ratings") or p.get("rating") is not None) and float(p.get("ratings", p.get("rating", 0))) >= min_rating]
+        products = [p for p in products if float(p.get("rating", 0)) >= min_rating]
     
     total = len(products)
     paginated = products[offset:offset + limit]
@@ -174,27 +176,12 @@ async def get_products(
 
 @app.get("/products/{sku}")
 async def get_product(request: Request, sku: str):
-    """Get specific product by SKU"""
-    # Try Supabase first if enabled
-    if FEATURE_SUPABASE_READ and SUPABASE_URL and SUPABASE_KEY:
-        try:
-            url = f"{SUPABASE_URL}/rest/v1/products?select=*&sku=eq.{sku}"
-            headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-            resp = requests.get(url, headers=headers, timeout=20)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data:
-                    return data[0]
-            # fallthrough to CSV
-        except Exception as e:
-            print(f"⚠ Supabase product fetch error: {e}")
-
-    products = load_csv("products.csv")
-    product = next((p for p in products if str(p.get('sku')) == str(sku)), None)
-
+    """Get specific product by SKU using centralized product loader"""
+    product = get_product(sku)
+    
     if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
+        raise HTTPException(status_code=404, detail=f"Product {sku} not found")
+    
     return product
 
 @app.get("/customers")
