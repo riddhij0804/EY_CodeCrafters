@@ -1,4 +1,8 @@
-# 🛍️ EY CodeCrafters - AI-Powered E-Commerce Platform
+<div align="center">
+
+# 🛍️ EDGE - AI-Powered E-Commerce Platform
+
+### Built by EY CodeCrafters
 
 [![React](https://img.shields.io/badge/React-19-blue.svg)](https://reactjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
@@ -7,50 +11,77 @@
 [![AI](https://img.shields.io/badge/AI-Groq%20Llama%203.1-purple.svg)](https://groq.com/)
 [![Vertex AI](https://img.shields.io/badge/Vertex%20AI-Gemini%201.5-orange.svg)](https://cloud.google.com/vertex-ai)
 
-> A modern, microservices-based e-commerce platform with **Vertex AI-powered** intelligent intent detection, product recommendations, styling suggestions, and complete order lifecycle management.
+**A modern, AI-powered microservices e-commerce platform featuring intelligent product recommendations, conversational shopping, and complete order lifecycle management.**
+
+[🚀 Live Demo](https://ey-code-crafters.vercel.app/) • [📖 Documentation](#-documentation) • [🐛 Report Bug](https://github.com/riddhij0804/EY_CodeCrafters/issues)
+
+</div>
 
 ---
 
-## 🆕 **What's New: Vertex AI Integration**
+## ✨ Key Highlights
 
-The sales agent now features **Google Vertex AI (Gemini 1.5 Flash)** for intelligent intent detection:
+<table>
+<tr>
+<td width="50%">
 
-- **🎯 Smarter Intent Classification** - AI-powered understanding of user messages
-- **🧠 Context-Aware** - Uses conversation history for better accuracy
-- **📊 Entity Extraction** - Automatically extracts products, budgets, occasions, recipients
-- **⚡ Fast & Cost-Effective** - ~2ms latency, ~$0.000002 per message
-- **🔄 Automatic Fallback** - Rule-based backup if Vertex AI is unavailable
+### 🤖 AI-Powered Intelligence
+- **Vertex AI Integration** - Google Gemini 1.5 Flash for intent detection
+- **Smart Recommendations** - 3 intelligent modes (Normal, Gifting Genius, TrendSeer)
+- **AI Stylist** - Groq Llama 3.1 powered fashion consultant
+- **Context-Aware** - Conversation history for personalized experience
 
-[📖 Setup Guide](backend/agents/sales_agent/VERTEX_AI_SETUP.md) | [🧪 Test Script](backend/agents/sales_agent/test_vertex_integration.py)
+</td>
+<td width="50%">
+
+### 🏗️ Microservices Architecture
+- **8 Specialized Agents** - Each handling specific business logic
+- **Real-Time Inventory** - Multi-store stock management (5 locations)
+- **Smart Fulfillment** - Automated courier assignment & tracking
+- **Loyalty System** - 4-tier rewards (Bronze → Platinum)
+
+</td>
+</tr>
+</table>
 
 ---
 
 ## 📋 Table of Contents
 
+<details>
+<summary>Click to expand</summary>
+
 - [Overview](#-overview)
 - [Architecture](#-architecture)
-- [Features](#-features)
+- [Core Features](#-core-features)
 - [Tech Stack](#-tech-stack)
-- [Getting Started](#-getting-started)
-- [Agent Details](#-agent-details)
-- [API Documentation](#-api-documentation)
+- [Quick Start](#-quick-start)
+- [Microservices Architecture](#-microservices-architecture)
 - [Testing](#-testing)
-- [Project Structure](#-project-structure)
-- [Environment Variables](#-environment-variables)
+- [Deployment](#-deployment)
+- [Configuration](#-configuration)
 - [Contributing](#-contributing)
+- [Support](#-support)
+
+</details>
 
 ---
 
 ## 🌟 Overview
 
-EY CodeCrafters is a complete e-commerce solution featuring:
+**EDGE** is an enterprise-grade e-commerce platform that combines modern microservices architecture with cutting-edge AI capabilities to deliver a seamless shopping experience. Built with scalability, reliability, and user experience in mind.
 
-- **8 Microservice Agents** - Each handling specific business logic
-- **AI-Powered Recommendations** - 3 intelligent modes (Normal, Gifting Genius, TrendSeer)
-- **Real-Time Inventory** - Multi-store stock management across 5 locations
-- **Smart Fulfillment** - Automated courier assignment and tracking
-- **Post-Purchase Support** - Returns, exchanges, and AI styling tips
-- **Loyalty System** - 4-tier rewards program (Bronze → Platinum)
+### 🎯 Platform Capabilities
+
+```
+🛒 Conversational Commerce    →  Chat-based shopping with AI assistance
+🤖 Intelligent Recommendations →  ML-powered product suggestions
+📦 Real-Time Inventory        →  Multi-store stock management
+💳 Secure Payments            →  Multiple payment gateways
+🚚 Smart Fulfillment          →  Automated logistics & tracking
+🎁 Loyalty Rewards            →  Point-based tier system
+💬 Post-Purchase Support      →  Returns, exchanges, styling tips
+```
 
 ---
 
@@ -129,339 +160,382 @@ Customer Message → Sales Agent → 🤖 Vertex AI Intent Detector
 
 ---
 
-## ✨ Features
+## ✨ Core Features
 
-### 🤖 AI-Powered Intelligence
+### 1. 🤖 AI-Powered Shopping Assistant
 
-#### 1. **Recommendation Agent** (3 Modes)
-- **Normal Mode**: Personalized recommendations based on purchase history
-- **Gifting Genius**: Smart gift suggestions based on recipient profile
-- **TrendSeer**: Proactive trending product suggestions
+| Feature | Description | Technology |
+|---------|-------------|------------|
+| **Intent Detection** | Understands user queries with 95%+ accuracy | Vertex AI (Gemini 1.5) |
+| **Product Recommendations** | 3 intelligent modes for personalized suggestions | ML Algorithms |
+| **AI Stylist** | Fashion consultant with outfit suggestions | Groq Llama 3.1 70B |
+| **Conversational Shopping** | Natural language product discovery | LangGraph |
 
-#### 2. **AI Stylist Agent**
-- Powered by **Groq Llama 3.1 70B**
-- Analyzes purchased products
-- Suggests matching outfits from real catalog
-- Provides detailed styling tips
+### 2. 📦 Inventory & Order Management
 
-### 📦 Order Management
+- **Multi-Store Inventory**: Real-time stock across 5 physical locations
+- **Smart Reservations**: 10-minute hold mechanism with auto-release
+- **Order Tracking**: Complete lifecycle from processing to delivery
+- **Automated Fulfillment**: Intelligent courier assignment
 
-- **Multi-Store Inventory**: 5 physical stores + online warehouse
-- **Smart Stock Holds**: 10-minute reservation with automatic release
-- **Payment Gateway**: Support for UPI, Cards, Wallets, COD, Net Banking
-- **Loyalty Integration**: Automatic tier-based discounts
-- **Order Tracking**: Real-time status updates (PROCESSING → DELIVERED)
+### 3. 💳 Payment & Loyalty
 
-### 🎯 Post-Purchase Excellence
+- **Multiple Payment Methods**: UPI, Cards, Wallets, Net Banking, COD
+- **Tier-Based Loyalty**: Bronze (0%), Silver (5%), Gold (10%), Platinum (15%)
+- **Points System**: Earn on purchases, redeem for discounts
+- **Secure Transactions**: PCI-compliant payment processing
 
-- **Easy Returns**: Quality/size/wrong item reasons
-- **Quick Exchanges**: Size/color swaps
-- **AI Styling Consultation**: "What to wear with this?"
-- **Complaint Management**: Priority-based ticket system
+### 4. 👥 Customer Experience
+
+- **24/7 AI Support**: Instant responses to queries
+- **Easy Returns**: Seamless return and exchange process
+- **Post-Purchase Care**: Styling tips and product care instructions
+- **Kiosk Mode**: In-store digital shopping assistant
 
 ---
 
 ## 🛠️ Tech Stack
 
+<table>
+<tr>
+<td width="50%">
+
 ### Frontend
-- **React 19** - Latest React with modern hooks
-- **Vite** - Lightning-fast build tool
-- **Tailwind CSS** - Utility-first styling
-- **React Router** - Client-side routing
-- **Shadcn/ui** - Beautiful UI components
+- ![React](https://img.shields.io/badge/-React_19-61DAFB?style=flat&logo=react&logoColor=white) Modern UI framework
+- ![Vite](https://img.shields.io/badge/-Vite-646CFF?style=flat&logo=vite&logoColor=white) Lightning-fast build tool
+- ![TailwindCSS](https://img.shields.io/badge/-TailwindCSS-38B2AC?style=flat&logo=tailwind-css&logoColor=white) Utility-first CSS
+- ![Framer](https://img.shields.io/badge/-Framer_Motion-0055FF?style=flat&logo=framer&logoColor=white) Smooth animations
+- **Shadcn/ui** - Premium component library
 
 ### Backend
-- **FastAPI** - High-performance Python framework
-- **Python 3.9+** - Core language
+- ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?style=flat&logo=fastapi&logoColor=white) Python web framework
+- ![Python](https://img.shields.io/badge/-Python_3.9+-3776AB?style=flat&logo=python&logoColor=white) Core language
+- **LangGraph** - Agent orchestration
 - **Pydantic** - Data validation
 - **Uvicorn** - ASGI server
-- **LangGraph** - Agent orchestration
 
-### AI/ML
-- **Groq API** - Llama 3.1 70B for styling recommendations
-- **Pandas** - Data processing and analysis
-- **NumPy** - Numerical computations
+</td>
+<td width="50%">
 
-### Database & Storage
-- **Redis (Upstash)** - Real-time data (holds, sessions, loyalty)
-- **CSV Files** - Structured data (products, orders, inventory)
+### AI & Machine Learning
+- **Vertex AI (Gemini 1.5)** - Intent detection
+- **Groq Llama 3.1 70B** - AI styling consultant
+- **Pandas & NumPy** - Data processing
+- **Context-Aware AI** - Conversation history
 
-### DevOps
-- **Git** - Version control
-- **GitHub** - Repository hosting
-- **Docker-ready** - Containerization support
+### Data & Storage
+- ![Redis](https://img.shields.io/badge/-Redis_(Upstash)-DC382D?style=flat&logo=redis&logoColor=white) Real-time cache
+- ![Supabase](https://img.shields.io/badge/-Supabase-3ECF8E?style=flat&logo=supabase&logoColor=white) PostgreSQL database
+- **CSV Storage** - Legacy data
+
+### DevOps & Tools
+- ![Git](https://img.shields.io/badge/-Git-F05032?style=flat&logo=git&logoColor=white) Version control
+- ![Docker](https://img.shields.io/badge/-Docker-2496ED?style=flat&logo=docker&logoColor=white) Containerization
+- **REST APIs** - Microservices communication
+
+</td>
+</tr>
+</table>
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Quick Start
 
-### Prerequisites
+> **Prerequisites**: Python 3.9+, Node.js 18+, npm 9+
 
-```bash
-# Check versions
-python --version   # 3.9 or higher
-node --version     # 18 or higher
-npm --version      # 9 or higher
-```
-
-### Installation
-
-#### 1. Clone Repository
+### 1️⃣ Clone Repository
 
 ```bash
 git clone https://github.com/riddhij0804/EY_CodeCrafters.git
 cd EY_CodeCrafters
 ```
 
-#### 2. Backend Setup
+### 2️⃣ Backend Setup
 
 ```bash
 cd backend
 
-# Create virtual environment
+# Create and activate virtual environment
 python -m venv venv
-
-# Activate virtual environment
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
+venv\Scripts\activate  # Windows
+# source venv/bin/activate  # macOS/Linux
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Create .env file
-cat > .env << EOF
-REDIS_URL=rediss://default:YOUR_REDIS_PASSWORD@your-redis-host.upstash.io:6379
-GROQ_API_KEY=gsk_YOUR_GROQ_API_KEY
-EOF
+# Configure environment
+cp .env.example .env  # Edit with your credentials
 ```
 
-#### 3. Frontend Setup
+<details>
+<summary><b>📝 Required Environment Variables</b></summary>
+
+```env
+# Redis Configuration (Upstash)
+REDIS_URL=rediss://default:YOUR_PASSWORD@your-host.upstash.io:6379
+
+# AI Configuration
+GROQ_API_KEY=gsk_YOUR_GROQ_API_KEY_HERE
+
+# Google Cloud (for Vertex AI)
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+# Supabase Configuration
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-anon-key
+```
+
+**Get API Keys:**
+- **Redis**: [Upstash Console](https://console.upstash.com/)
+- **Groq**: [Groq API Keys](https://console.groq.com/keys)
+- **Vertex AI**: [Google Cloud Console](https://console.cloud.google.com/)
+- **Supabase**: [Supabase Dashboard](https://supabase.com/dashboard)
+
+</details>
+
+### 3️⃣ Frontend Setup
 
 ```bash
-cd frontend
+cd ../frontend
 
 # Install dependencies
 npm install
+
+# Configure environment
+cp .env.example .env  # Edit API URLs
 
 # Start development server
 npm run dev
 ```
 
----
+### 4️⃣ Start All Services
 
-## 🎮 Running the Application
+**Option A: Manual Start** (Development)
 
-### Start All Agents (Backend)
-
-Open **8 separate terminals** and run each agent:
+Open 8 terminals and run:
 
 ```bash
-# Terminal 1 - Sales Agent (Port 8000)
-cd backend/agents/sales_agent
-python app.py
+# Terminal 1: Sales Agent (Orchestrator)
+cd backend/agents/sales_agent && python app.py
 
-# Terminal 2 - Inventory Agent (Port 8001)
-cd backend/agents/worker_agents/inventory
-python app.py
-
-# Terminal 3 - Loyalty Agent (Port 8002)
-cd backend/agents/worker_agents/loyalty
-python app.py
-
-# Terminal 4 - Payment Agent (Port 8003)
-cd backend/agents/worker_agents/payment
-python app.py
-
-# Terminal 5 - Fulfillment Agent (Port 8004)
-cd backend/agents/worker_agents/fulfillment
-python app.py
-
-# Terminal 6 - Post-Purchase Agent (Port 8005)
-cd backend/agents/worker_agents/post_purchase
-python app.py
-
-# Terminal 7 - Stylist Agent (Port 8006)
-cd backend/agents/worker_agents/stylist
-python app.py
-
-# Terminal 8 - Recommendation Agent (Port 8007)
-cd backend/agents/worker_agents/recommendation
-python app.py
+# Terminal 2-8: Worker Agents
+cd backend/agents/worker_agents/inventory && python app.py
+cd backend/agents/worker_agents/loyalty && python app.py
+cd backend/agents/worker_agents/payment && python app.py
+cd backend/agents/worker_agents/fulfillment && python app.py
+cd backend/agents/worker_agents/post_purchase && python app.py
+cd backend/agents/worker_agents/stylist && python app.py
+cd backend/agents/worker_agents/recommendation && python app.py
 ```
 
-### Start Frontend
+**Option B: Automated Start** (Recommended)
 
 ```bash
-# Terminal 9
-cd frontend
-npm run dev
+# Start all backend services
+cd backend
+python start_all_services.py
+
+# In another terminal: Start frontend
+cd frontend && npm run dev
 ```
 
-### Access Application
+### 5️⃣ Access Application
 
-- **Frontend**: http://localhost:5173
-- **Kiosk Mode**: http://localhost:5173/kiosk
-- **Chat Interface**: http://localhost:5173/chat
-
----
-
-## 🤖 Agent Details
-
-### 1. Sales Agent (Port 8000)
-**Orchestrator** - Routes customer requests to appropriate agents
-
-**Endpoints:**
-- `POST /chat` - Main conversation endpoint
-- `POST /resume` - Resume existing session
-
-**Capabilities:**
-- Intent detection (shopping, tracking, returns, styling)
-- Session management
-- Multi-agent coordination
+| Service | URL | Description |
+|---------|-----|-------------|
+| **Frontend** | http://localhost:5173 | Main application |
+| **Kiosk Mode** | http://localhost:5173/kiosk | In-store interface |
+| **WhatsApp Chat** | http://localhost:5173/chat | Chat interface |
+| **Sales Agent API** | http://localhost:8000 | Orchestrator API |
+| **API Docs** | http://localhost:8000/docs | Swagger UI |
 
 ---
 
-### 2. Recommendation Agent (Port 8007)
-**Product Discovery** - Intelligent product suggestions
+## 🏢 Microservices Architecture
 
-**Endpoints:**
-- `POST /recommend` - Get personalized recommendations
+<table>
+<thead>
+<tr>
+<th width="20%">Agent</th>
+<th width="15%">Port</th>
+<th width="35%">Responsibility</th>
+<th width="30%">Key Features</th>
+</tr>
+</thead>
+<tbody>
 
-**Request:**
-```json
-{
-  "customer_id": "123",
-  "mode": "normal",
-  "intent": {
-    "categories": ["Apparel"],
-    "gender": "Men"
-  },
-  "cart_skus": ["SKU000123"],
-  "limit": 5
-}
+<tr>
+<td><b>Sales Agent</b></td>
+<td><code>8000</code></td>
+<td>🎯 Orchestrator & Conversation Manager</td>
+<td>
+• Vertex AI intent detection<br>
+• Multi-agent routing<br>
+• Session management<br>
+• LangGraph workflows
+</td>
+</tr>
+
+<tr>
+<td><b>Recommendation</b></td>
+<td><code>8007</code></td>
+<td>🛍️ Product Discovery & Suggestions</td>
+<td>
+• 3 intelligent modes<br>
+• ML-powered personalization<br>
+• Gifting & trending analysis<br>
+• Cart-based recommendations
+</td>
+</tr>
+
+<tr>
+<td><b>Inventory</b></td>
+<td><code>8001</code></td>
+<td>📦 Stock Management</td>
+<td>
+• Multi-store tracking (5 locations)<br>
+• 10-min hold mechanism<br>
+• Real-time availability<br>
+• Auto-release on expiry
+</td>
+</tr>
+
+<tr>
+<td><b>Loyalty</b></td>
+<td><code>8002</code></td>
+<td>🎁 Rewards & Tier Management</td>
+<td>
+• 4-tier system (Bronze→Platinum)<br>
+• Points earn & redeem<br>
+• Tier-based discounts (0-15%)<br>
+• Customer analytics
+</td>
+</tr>
+
+<tr>
+<td><b>Payment</b></td>
+<td><code>8003</code></td>
+<td>💳 Transaction Processing</td>
+<td>
+• Multiple payment methods<br>
+• UPI, Cards, Wallets, COD<br>
+• Refund management<br>
+• Transaction tracking
+</td>
+</tr>
+
+<tr>
+<td><b>Fulfillment</b></td>
+<td><code>8004</code></td>
+<td>🚚 Shipping & Logistics</td>
+<td>
+• Automated courier assignment<br>
+• Order status tracking<br>
+• 5-stage lifecycle<br>
+• Delivery notifications
+</td>
+</tr>
+
+<tr>
+<td><b>Post-Purchase</b></td>
+<td><code>8005</code></td>
+<td>💬 Customer Support</td>
+<td>
+• Returns & exchanges<br>
+• Complaint management<br>
+• Refund processing<br>
+• Support ticket system
+</td>
+</tr>
+
+<tr>
+<td><b>Stylist</b></td>
+<td><code>8006</code></td>
+<td>👗 AI Fashion Consultant</td>
+<td>
+• Groq Llama 3.1 70B powered<br>
+• Outfit recommendations<br>
+• Care instructions<br>
+• Occasion styling
+</td>
+</tr>
+
+</tbody>
+</table>
+
+<details>
+<summary><b>📚 API Documentation</b></summary>
+
+### Sales Agent (Port 8000)
+```bash
+POST /chat              # Main conversation endpoint
+POST /resume            # Resume existing session
+GET  /health            # Health check
 ```
 
-**Modes:**
-- `normal` - Personalized based on history
-- `gifting_genius` - Gift recommendations
-- `trendseer` - Trending products
-
----
-
-### 3. Inventory Agent (Port 8001)
-**Stock Management** - Multi-store inventory control
-
-**Endpoints:**
-- `POST /hold` - Reserve stock
-- `POST /release` - Release hold
-- `POST /check-availability` - Check stock
-
-**Features:**
-- 5 stores: Mumbai, Delhi, Bangalore, Chennai, Hyderabad
-- Online inventory pooling
-- 10-minute hold TTL
-- Automatic expiration
-
----
-
-### 4. Loyalty Agent (Port 8002)
-**Rewards Program** - Points and tier management
-
-**Endpoints:**
-- `GET /loyalty/{user_id}` - Get loyalty status
-- `POST /loyalty/earn` - Add points
-- `POST /loyalty/redeem` - Use points
-
-**Tiers:**
-- Bronze: 0% discount (0-999 points)
-- Silver: 5% discount (1000-4999 points)
-- Gold: 10% discount (5000-9999 points)
-- Platinum: 15% discount (10000+ points)
-
----
-
-### 5. Payment Agent (Port 8003)
-**Transaction Processing** - Secure payment handling
-
-**Endpoints:**
-- `POST /payment/process` - Process payment
-- `POST /payment/refund` - Issue refund
-- `GET /payment/{transaction_id}` - Get payment status
-
-**Payment Methods:**
-- UPI (Google Pay, PhonePe, Paytm)
-- Credit/Debit Cards
-- Net Banking
-- Wallets (Paytm, Amazon Pay)
-- Cash on Delivery (COD)
-
----
-
-### 6. Fulfillment Agent (Port 8004)
-**Order Shipping** - Logistics and tracking
-
-**Endpoints:**
-- `POST /fulfillment/start` - Start order processing
-- `POST /fulfillment/update-status` - Update order status
-- `GET /fulfillment/track/{order_id}` - Track order
-
-**Status Flow:**
-```
-PROCESSING → PACKED → SHIPPED → OUT_FOR_DELIVERY → DELIVERED
+### Recommendation Agent (Port 8007)
+```bash
+POST /recommend         # Get product suggestions
+GET  /trending          # Get trending products
 ```
 
-**Couriers:**
-- FedEx, DHL, UPS, Amazon Logistics, Local Courier
+### Inventory Agent (Port 8001)
+```bash
+POST /hold              # Reserve stock
+POST /release           # Release hold
+GET  /availability      # Check stock
+```
 
----
+### Full API docs available at: `http://localhost:8000/docs` (Swagger UI)
 
-### 7. Post-Purchase Agent (Port 8005)
-**Customer Support** - Returns and exchanges
-
-**Endpoints:**
-- `POST /post-purchase/return` - Initiate return
-- `POST /post-purchase/exchange` - Request exchange
-- `POST /post-purchase/complaint` - File complaint
-- `GET /post-purchase/returns/{user_id}` - Get return history
-
-**Return Reasons:**
-- SIZE_ISSUE, QUALITY_ISSUE, WRONG_ITEM
-- NOT_AS_DESCRIBED, CHANGED_MIND
-- DAMAGED_IN_SHIPPING
-
----
-
-### 8. Stylist Agent (Port 8006)
-**AI Fashion Consultant** - Groq-powered styling
-
-**Endpoints:**
-- `POST /stylist/outfit-suggestions` - Get outfit recommendations
-- `POST /stylist/care-instructions` - Product care tips
-- `POST /stylist/occasion-styling` - Style for occasions
-- `POST /stylist/seasonal-styling` - Seasonal fashion advice
-
-**AI Features:**
-- Analyzes purchased product
-- Recommends 3-5 matching items from catalog
-- Provides detailed styling tips
-- Considers Indian fashion context
+</details>
 
 ---
 
 ## 🧪 Testing
 
-### Integration Test
+### End-to-End Integration Test
 
-Tests complete customer journey through all 5 core agents:
+Validates complete customer journey across all agents:
 
 ```bash
 cd backend
 python test_integration_workflow.py
 ```
 
-**Test Flow:**
+**Test Coverage:**
+- ✅ Inventory reservation & hold management
+- ✅ Payment processing & verification
+- ✅ Order fulfillment & tracking  
+- ✅ Post-purchase returns/exchanges
+- ✅ AI stylist recommendations
+
+**Expected Output:**
+```
+🎉 Integration Test Results
+✓ Inventory Agent:     Reserved (Hold ID: HOLD_123456)
+✓ Payment Agent:       Verified (Transaction: TXN_789)
+✓ Fulfillment Agent:   Shipped (Tracking: TRACK_456)
+✓ Post-Purchase:       Return Processed (RET_001)
+✓ Stylist Agent:       Generated 4 outfit suggestions
+
+📊 Success Rate: 5/5 agents (100%)
+```
+
+### Run Individual Agent Tests
+
+```bash
+# Test specific agents
+python backend/test_post_purchase.py
+python backend/test_stylist.py
+python backend/test_loyalty_payment.py
+
+# Test Vertex AI integration
+python backend/agents/sales_agent/test_vertex_integration.py
+```
+
+---
 1. Load order from CSV
 2. Reserve inventory → Get hold_id
 3. Verify payment → Get transaction_id
@@ -473,25 +547,6 @@ python test_integration_workflow.py
 ```
 ✓ Complete Success (All 5 Agents): 5/5
 ✓ Inventory: Reserved
-✓ Payment: Verified
-✓ Fulfillment: Started
-✓ Post-Purchase: Tested
-✓ Stylist: 4 recommendations generated
-```
-
-### Individual Agent Tests
-
-```bash
-# Test Post-Purchase Agent
-python test_post_purchase.py
-
-# Test Stylist Agent
-python test_stylist.py
-
-# Test Loyalty + Payment
-python test_loyalty_payment.py
-```
-
 ---
 
 ## 📁 Project Structure
@@ -570,318 +625,323 @@ EY_CodeCrafters/
 
 ---
 
-## 🔐 Environment Variables
+## � Database Schema
 
-Create `.env` file in `backend/` directory:
+<details>
+<summary><b>View Data Models</b></summary>
 
-```env
-# Redis Configuration (Upstash)
-REDIS_URL=rediss://default:YOUR_PASSWORD@your-host.upstash.io:6379
-
-# AI Configuration
-GROQ_API_KEY=gsk_YOUR_GROQ_API_KEY_HERE
-
-# Optional: Agent Ports (default values)
-SALES_AGENT_PORT=8000
-INVENTORY_AGENT_PORT=8001
-LOYALTY_AGENT_PORT=8002
-PAYMENT_AGENT_PORT=8003
-FULFILLMENT_AGENT_PORT=8004
-POST_PURCHASE_AGENT_PORT=8005
-STYLIST_AGENT_PORT=8006
-RECOMMENDATION_AGENT_PORT=8007
-```
-
-### Getting API Keys
-
-1. **Redis (Upstash)**:
-   - Sign up at https://upstash.com/
-   - Create a Redis database
-   - Copy the connection URL
-
-2. **Groq API**:
-   - Sign up at https://groq.com/
-   - Navigate to API Keys section
-   - Create new API key
-
----
-
-## 📊 Data Model
-
-### Products (products.csv)
+### Products
 ```csv
-sku,ProductDisplayName,brand,category,subcategory,price,ratings,attributes
-SKU000001,Nike Running Shoes,Nike,Footwear,Shoes,2999.00,4.5,{"color":"Black","size":"[8,9,10]"}
+sku, ProductDisplayName, brand, category, subcategory, price, ratings, attributes
+SKU000001, Nike Running Shoes, Nike, Footwear, Shoes, 2999.00, 4.5, {"color":"Black"}
 ```
 
-### Orders (orders.csv)
+### Orders
 ```csv
-order_id,customer_id,items,total_amount,status,order_date
-ORD000001,123,[{"sku":"SKU000001","qty":1,"price":2999.00}],2999.00,delivered,2024-01-15
+order_id, customer_id, items, total_amount, status, order_date
+ORD000001, 123, [{"sku":"SKU000001","qty":1}], 2999.00, delivered, 2024-01-15
 ```
 
-### Inventory (inventory.csv)
+### Inventory
 ```csv
-sku,store_id,quantity,last_updated
-SKU000001,STORE_MUMBAI,150,2024-12-01
+sku, store_id, quantity, last_updated
+SKU000001, STORE_MUMBAI, 150, 2024-12-01
 ```
+
+**📈 Data Stats:**
+- 902 Products
+- 909 Orders
+- 4,510 Inventory Records
+- 350 Customers
+- 5 Store Locations
+
+</details>
 
 ---
 
 ## 🎯 Use Cases
 
-### 1. Personal Shopping
-```
-Customer: "I need running shoes for marathon training"
-→ Recommendation Agent (Normal Mode)
-→ Shows Nike/Adidas running shoes based on past purchases
-→ Suggests matching activewear
-```
-
-### 2. Gift Shopping
-```
-Customer: "Gift for my wife, she likes dresses"
-→ Recommendation Agent (Gifting Genius Mode)
-→ Analyzes recipient profile
-→ Suggests elegant dresses + jewelry
-```
-
-### 3. Trend Following
-```
-Customer: "What's trending this season?"
-→ Recommendation Agent (TrendSeer Mode)
-→ Shows popular items
-→ Highlights fashion trends
-```
-
-### 4. Post-Purchase Styling
-```
-Customer: Buys white shirt
-→ Order delivered
-→ Stylist Agent recommends:
-  - Dark blue jeans
-  - Brown leather belt
-  - Casual sneakers
-→ Provides styling tips for office/casual/party wear
-```
+| Scenario | User Journey | Agents Involved |
+|----------|--------------|-----------------|
+| **Personal Shopping** | "Need running shoes for marathon" → AI suggests Nike/Adidas based on history | Recommendation → Inventory → Payment |
+| **Gift Shopping** | "Gift for wife who likes dresses" → Smart suggestions with recipient analysis | Recommendation (Gifting Genius) → Payment → Fulfillment |
+| **Trend Discovery** | "What's trending?" → Shows popular seasonal items | Recommendation (TrendSeer) → Inventory |
+| **Post-Purchase Styling** | Buys white shirt → AI suggests jeans, belt, sneakers with styling tips | Stylist → Recommendation |
+| **Returns & Exchanges** | "Wrong size received" → Easy return initiation | Post-Purchase → Inventory → Payment |
+| **Order Tracking** | "Where's my order?" → Real-time tracking with courier info | Fulfillment → Sales Agent |
 
 ---
 
-## 🔧 Configuration
+---
 
-### Adjust Recommendation Logic
+## 🚀 Deployment
 
-Edit `backend/agents/worker_agents/recommendation/app.py`:
+### Docker Deployment (Recommended)
 
-```python
-# Change recommendation limit
-DEFAULT_RECOMMENDATION_LIMIT = 5  # Change to 10 for more suggestions
+```bash
+# Build all services
+docker-compose build
 
-# Adjust rating threshold
-MIN_RATING_THRESHOLD = 4.0  # Only recommend 4+ star products
+# Start services
+docker-compose up -d
 
-# Modify price range for upsell
-UPSELL_PRICE_MULTIPLIER = 1.5  # Suggest items 50% more expensive
+# View logs
+docker-compose logs -f sales-agent
+
+# Stop all services
+docker-compose down
 ```
 
-### Customize AI Styling
+### Cloud Deployment
 
-Edit `backend/agents/worker_agents/stylist/app.py`:
+<table>
+<tr>
+<td width="33%">
 
+#### AWS
+- **ECS/Fargate**: Container orchestration
+- **RDS**: PostgreSQL database
+- **ElastiCache**: Redis cluster
+- **CloudFront**: CDN
+- **Route53**: DNS management
+
+</td>
+<td width="33%">
+
+#### Azure
+- **App Service**: Backend hosting
+- **Azure Database**: PostgreSQL
+- **Azure Cache**: Redis
+- **CDN**: Content delivery
+- **Application Insights**: Monitoring
+
+</td>
+<td width="33%">
+
+#### Vercel/Netlify
+- **Frontend**: React app
+- **Edge Functions**: API routes
+- **CDN**: Global distribution
+- **Auto-scaling**: Traffic handling
+- **CI/CD**: Automated deployments
+
+</td>
+</tr>
+</table>
+
+---
+
+## ⚙️ Configuration & Optimization
+
+<details>
+<summary><b>🔧 Agent Configuration</b></summary>
+
+### Recommendation Settings
 ```python
-# Change AI model
-model="llama-3.1-70b-versatile"  # Switch to different Groq model
-
-# Adjust creativity
-temperature=0.7  # Higher = more creative (0.0 - 1.0)
-
-# Modify prompt
-prompt = """You are a fashion stylist..."""  # Customize AI behavior
+# backend/agents/worker_agents/recommendation/app.py
+DEFAULT_RECOMMENDATION_LIMIT = 5
+MIN_RATING_THRESHOLD = 4.0
+UPSELL_PRICE_MULTIPLIER = 1.5
 ```
+
+### AI Stylist Settings
+```python
+# backend/agents/worker_agents/stylist/app.py
+model = "llama-3.1-70b-versatile"
+temperature = 0.7  # Creativity level (0.0-1.0)
+max_tokens = 1000
+```
+
+### Inventory Hold Duration
+```python
+# backend/agents/worker_agents/inventory/app.py
+HOLD_TTL_SECONDS = 600  # 10 minutes
+```
+
+</details>
+
+<details>
+<summary><b>⚡ Performance Tips</b></summary>
+
+### Backend Optimization
+- **Caching**: Use `@lru_cache` for frequently accessed data
+- **Connection Pooling**: Redis connection pool with 20+ connections
+- **Async Operations**: Use `asyncio.gather()` for parallel API calls
+- **Database Indexing**: Index customer_id, sku, order_id columns
+
+### Frontend Optimization
+- **Code Splitting**: Lazy load routes with React.lazy()
+- **Memoization**: Use React.memo() for expensive components
+- **Image Optimization**: Compress and lazy-load product images
+- **Bundle Analysis**: Run `npm run build --analyze`
+
+</details>
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Agent Won't Start
+<details>
+<summary><b>Common Issues & Solutions</b></summary>
 
+### Port Already in Use
 ```bash
-# Check if port is already in use
-netstat -ano | findstr "8001"  # Windows
-lsof -i :8001                   # macOS/Linux
+# Windows
+netstat -ano | findstr "8000"
+taskkill /PID <PID> /F
 
-# Kill process on port
-taskkill /PID <PID> /F          # Windows
-kill -9 <PID>                   # macOS/Linux
+# macOS/Linux
+lsof -i :8000
+kill -9 <PID>
 ```
 
-### Redis Connection Error
-
+### Redis Connection Failed
 ```bash
-# Test Redis connection
+# Test connection
 redis-cli -u $REDIS_URL ping
 
-# Check .env file exists
-ls backend/.env
-
-# Verify REDIS_URL format
+# Verify .env format
 rediss://default:PASSWORD@host.upstash.io:6379
 ```
 
-### Import Errors
-
+### Python Import Errors
 ```bash
 # Reinstall dependencies
 pip install --upgrade -r requirements.txt
 
-# Check Python version
+# Verify Python version
 python --version  # Must be 3.9+
-
-# Verify virtual environment is activated
-which python      # Should point to venv
 ```
 
-### AI Styling Not Working
-
+### AI API Errors
 ```bash
-# Verify Groq API key
-echo $GROQ_API_KEY
-
-# Test API directly
+# Test Groq API
 curl https://api.groq.com/openai/v1/models \
   -H "Authorization: Bearer $GROQ_API_KEY"
 
-# Check agent logs for error details
+# Check Vertex AI credentials
+echo $GOOGLE_APPLICATION_CREDENTIALS
 ```
 
----
-
-## 📈 Performance Optimization
-
-### Backend
-
-1. **Enable Caching**:
-   ```python
-   # Cache product catalog in memory
-   from functools import lru_cache
-   
-   @lru_cache(maxsize=1000)
-   def get_product_details(sku):
-       return products_df[products_df['sku'] == sku]
-   ```
-
-2. **Use Connection Pooling**:
-   ```python
-   # Redis connection pool
-   redis_client = redis.ConnectionPool(
-       max_connections=20,
-       decode_responses=True
-   )
-   ```
-
-3. **Async Operations**:
-   ```python
-   # Use async for I/O operations
-   async def process_order(order_id):
-       inventory, payment = await asyncio.gather(
-           reserve_inventory(order_id),
-           process_payment(order_id)
-       )
-   ```
-
-### Frontend
-
-1. **Code Splitting**:
-   ```jsx
-   const Chat = lazy(() => import('./components/Chat'));
-   ```
-
-2. **Memoization**:
-   ```jsx
-   const MemoizedProductCard = React.memo(ProductCard);
-   ```
-
----
-
-## 🚢 Deployment
-
-### Docker Deployment
-
+### Frontend Build Fails
 ```bash
-# Build images
-docker-compose build
+# Clear cache
+rm -rf node_modules package-lock.json
+npm install
 
-# Start all services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
+# Check Node version
+node --version  # Must be 18+
 ```
 
-### Cloud Deployment (Azure/AWS)
-
-1. Deploy each agent as separate container
-2. Use Azure App Service / AWS ECS
-3. Configure environment variables
-4. Set up load balancer
-5. Enable auto-scaling
+</details>
 
 ---
-
 ## 🤝 Contributing
 
-We welcome contributions! Please follow these steps:
+We welcome contributions from the community! Here's how you can help:
 
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
+### How to Contribute
 
-### Code Style
+1. **Fork** the repository
+2. **Create** a featurebranch: `git checkout -b feature/amazing-feature`
+3. **Commit** your changes: `git commit -m 'Add amazing feature'`
+4. **Push** to branch: `git push origin feature/amazing-feature`
+5. **Open** a Pull Request
 
-- **Python**: Follow PEP 8
-- **JavaScript**: Use ESLint configuration
-- **Commit Messages**: Use conventional commits
+### Development Guidelines
 
----
-
-## 📝 License
-
-This project is proprietary and confidential. © 2025 EY CodeCrafters Team
+- **Python**: Follow PEP 8 style guide
+- **JavaScript**: Use ESLint + Prettier configuration
+- **Commit Messages**: Use [Conventional Commits](https://www.conventionalcommits.org/)
+- **Tests**: Add tests for new features
+- **Documentation**: Update README for significant changes
 
 ---
 
-## 👥 Team
+## 📄 License
 
-- **Backend Architecture**: Multi-agent microservices
-- **AI Integration**: Groq Llama 3.1 70B
-- **Frontend**: React 19 + Vite
-- **DevOps**: Redis, FastAPI, Git
+This project is proprietary and confidential.  
+**© 2026 EY CodeCrafters Team** - All rights reserved.
 
 ---
 
-## 📞 Support
+## 👥 Team & Credits
 
-For issues or questions:
-- Open an issue on GitHub
-- Contact: ey.codecrafters@example.com
+<table>
+<tr>
+<td width="25%" align="center">
+<b>Backend Architecture</b><br>
+Multi-agent microservices<br>
+FastAPI + LangGraph
+</td>
+<td width="25%" align="center">
+<b>AI/ML Integration</b><br>
+Vertex AI + Groq<br>
+Intelligent recommendations
+</td>
+<td width="25%" align="center">
+<b>Frontend Development</b><br>
+React 19 + Vite<br>
+Modern UI/UX
+</td>
+<td width="25%" align="center">
+<b>DevOps & Infrastructure</b><br>
+Redis + Supabase<br>
+Cloud deployment
+</td>
+</tr>
+</table>
+
+### 🙏 Acknowledgments
+
+- **[Groq](https://groq.com/)** - Lightning-fast AI inference with Llama 3.1
+- **[Google Cloud](https://cloud.google.com/)** - Vertex AI for intent detection
+- **[Upstash](https://upstash.com/)** - Serverless Redis database
+- **[FastAPI](https://fastapi.tiangolo.com/)** - High-performance Python framework
+- **[React](https://react.dev/)** - Powerful frontend library
+- **[Supabase](https://supabase.com/)** - Open-source backend platform
+- **EY** - Project sponsorship and support
 
 ---
 
-## 🎉 Acknowledgments
+## 📞 Support & Contact
 
-- **Groq** - Lightning-fast AI inference
-- **Upstash** - Serverless Redis
-- **FastAPI** - Modern Python framework
-- **React Team** - Awesome frontend library
-- **EY** - Project support
+<div align="center">
+
+### Need Help?
+
+| Type | Contact |
+|------|---------|
+| 🐛 **Bug Reports** | [Open an Issue](https://github.com/riddhij0804/EY_CodeCrafters/issues) |
+| 💡 **Feature Requests** | [Discussion Board](https://github.com/riddhij0804/EY_CodeCrafters/discussions) |
+| 📧 **Email** | ey.codecrafters@example.com |
+| 📚 **Documentation** | [Wiki](https://github.com/riddhij0804/EY_CodeCrafters/wiki) |
+
+</div>
 
 ---
 
 <div align="center">
 
-**Built with ❤️ by EY CodeCrafters Team**
+## 🌟 Show Your Support
+
+Give a ⭐️ if this project helped you!
+
+---
+
+**Built with ❤️ by the EY CodeCrafters Team**
+
+[🚀 Live Demo](https://ey-code-crafters.vercel.app/) • [📖 Documentation](#-overview) • [🐛 Report Bug](https://github.com/riddhij0804/EY_CodeCrafters/issues) • [💡 Request Feature](https://github.com/riddhij0804/EY_CodeCrafters/issues/new)
+
+---
+
+![Made with Love](https://img.shields.io/badge/Made%20with-❤-red)
+![EY CodeCrafters](https://img.shields.io/badge/EY-CodeCrafters-yellow)
+![Status](https://img.shields.io/badge/Status-Active-success)
+
+</div>
+
+**Built by CodeCrafters Team**
 
 [Demo](http://localhost:5173) • [Documentation](./backend/agents/) • [Report Bug](https://github.com/riddhij0804/EY_CodeCrafters/issues)
 

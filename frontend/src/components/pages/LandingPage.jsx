@@ -23,9 +23,14 @@ const LandingPage = () => {
   const { getCartCount, addToCart } = useCart();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  const [customerProfile, setCustomerProfile] = useState(() => sessionStore.getProfile());
-  const [customerPhone, setCustomerPhone] = useState(() => sessionStore.getPhone());
+  const [customerProfile, setCustomerProfile] = useState(() =>
+    sessionStore.getProfile(),
+  );
+  const [customerPhone, setCustomerPhone] = useState(() =>
+    sessionStore.getPhone(),
+  );
   const [featuredProducts, setFeaturedProducts] = useState([]);
+  const [featureImages, setFeatureImages] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const profileButtonRef = useRef(null);
   const profileMenuRef = useRef(null);
@@ -70,9 +75,10 @@ const LandingPage = () => {
     const fetchFeaturedProducts = async () => {
       try {
         setLoadingProducts(true);
-        const response = await salesAgentService.getProducts({ limit: 6 });
+        const response = await salesAgentService.getProducts({ limit: 10 });
         const products = response.products || [];
         setFeaturedProducts(products.slice(0, 6));
+        setFeatureImages(products.slice(6, 10));
       } catch (error) {
         console.error("Error fetching featured products:", error);
         setFeaturedProducts([]);
@@ -84,10 +90,14 @@ const LandingPage = () => {
     fetchFeaturedProducts();
   }, []);
 
-  const profile = customerProfile && Object.keys(customerProfile).length > 0 ? customerProfile : null;
+  const profile =
+    customerProfile && Object.keys(customerProfile).length > 0
+      ? customerProfile
+      : null;
   const customerId = profile?.customer_id || profile?.customerId || "--";
   const loyaltyTier = profile?.loyalty_tier || profile?.loyaltyTier || "Bronze";
-  const loyaltyPoints = profile?.loyalty_points || profile?.loyaltyPoints || "0";
+  const loyaltyPoints =
+    profile?.loyalty_points || profile?.loyaltyPoints || "0";
   const displayName = profile?.name || "Guest";
   const displayCity = profile?.city || "";
 
@@ -134,7 +144,7 @@ const LandingPage = () => {
                   FEATURES
                 </a>
                 <button
-                  onClick={() => navigate('/products')}
+                  onClick={() => navigate("/products")}
                   className="text-xs font-medium text-yellow-100 hover:text-yellow-200 transition-colors tracking-wider cursor-pointer"
                 >
                   PRODUCTS
@@ -158,7 +168,9 @@ const LandingPage = () => {
                     className="relative flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 hover:bg-white/15 text-yellow-100 transition-colors"
                   >
                     <User className="w-5 h-5" />
-                    <span className="text-xs font-semibold tracking-wider">{displayName}</span>
+                    <span className="text-xs font-semibold tracking-wider">
+                      {displayName}
+                    </span>
                   </button>
                   <Link
                     to="/profile"
@@ -170,7 +182,7 @@ const LandingPage = () => {
                     onClick={() => {
                       sessionStore.clearAll();
                       setCustomerProfile(null);
-                      navigate('/login');
+                      navigate("/login");
                     }}
                     className="px-4 py-2 text-xs font-semibold tracking-wider text-yellow-100 hover:bg-red-700 transition-colors rounded-lg"
                   >
@@ -186,9 +198,9 @@ const LandingPage = () => {
                   LOGIN / SIGNUP
                 </Link>
               )}
-              <button 
-                onClick={() => navigate('/cart')}
-                className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors" 
+              <button
+                onClick={() => navigate("/cart")}
+                className="relative p-2 text-yellow-100 hover:text-yellow-200 transition-colors"
                 aria-label="Shopping cart"
               >
                 <ShoppingCart className="w-5 h-5" />
@@ -205,14 +217,20 @@ const LandingPage = () => {
                   className="absolute right-0 top-14 w-72 bg-white text-red-900 rounded-2xl shadow-2xl border border-red-100/70 overflow-hidden z-50"
                 >
                   <div className="bg-gradient-to-r from-red-700 to-orange-500 px-4 py-3 text-white">
-                    <p className="text-sm uppercase tracking-wide font-semibold">Account Overview</p>
+                    <p className="text-sm uppercase tracking-wide font-semibold">
+                      Account Overview
+                    </p>
                     <p className="text-lg font-bold">{displayName}</p>
-                    <p className="text-xs text-orange-100/90">Customer ID: {customerId}</p>
+                    <p className="text-xs text-orange-100/90">
+                      Customer ID: {customerId}
+                    </p>
                   </div>
                   <div className="px-4 py-3 space-y-3 text-sm">
                     <div className="flex items-center justify-between">
                       <span className="font-medium text-red-800">Phone</span>
-                      <span className="text-red-600">{customerPhone || "--"}</span>
+                      <span className="text-red-600">
+                        {customerPhone || "--"}
+                      </span>
                     </div>
                     {displayCity && (
                       <div className="flex items-center justify-between">
@@ -221,16 +239,23 @@ const LandingPage = () => {
                       </div>
                     )}
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-red-800">Loyalty Tier</span>
-                      <span className="text-orange-600 font-semibold">{loyaltyTier}</span>
+                      <span className="font-medium text-red-800">
+                        Loyalty Tier
+                      </span>
+                      <span className="text-orange-600 font-semibold">
+                        {loyaltyTier}
+                      </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="font-medium text-red-800">Points</span>
-                      <span className="text-orange-600 font-semibold">{loyaltyPoints}</span>
+                      <span className="text-orange-600 font-semibold">
+                        {loyaltyPoints}
+                      </span>
                     </div>
                   </div>
                   <div className="px-4 py-3 bg-red-50 text-xs text-red-700">
-                    Sessions are shared across WhatsApp, Kiosk, and more. Close the browser to sign out securely.
+                    Sessions are shared across WhatsApp, Kiosk, and more. Close
+                    the browser to sign out securely.
                   </div>
                 </div>
               )}
@@ -304,7 +329,7 @@ const LandingPage = () => {
                 transition={{ delay: 0.28 }}
                 onClick={() => {
                   setMobileMenuOpen(false);
-                  navigate('/cart');
+                  navigate("/cart");
                 }}
                 className="flex items-center gap-2 text-sm font-medium text-yellow-100 hover:text-yellow-200 transition-colors w-full"
               >
@@ -324,8 +349,12 @@ const LandingPage = () => {
                         <User className="w-5 h-5" />
                       </div>
                       <div>
-                        <p className="text-sm font-semibold tracking-wide">{displayName}</p>
-                        <p className="text-[11px] uppercase tracking-widest text-yellow-200/80">Customer ID: {customerId}</p>
+                        <p className="text-sm font-semibold tracking-wide">
+                          {displayName}
+                        </p>
+                        <p className="text-[11px] uppercase tracking-widest text-yellow-200/80">
+                          Customer ID: {customerId}
+                        </p>
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3 text-xs">
@@ -545,19 +574,32 @@ const LandingPage = () => {
                 viewport={{ once: true, amount: 0.2 }}
                 transition={{ duration: 0.5, delay: idx * 0.1 }}
                 whileHover={{ y: -10 }}
+                onClick={() => {
+                  if (featureImages[idx]?.sku) {
+                    navigate(`/products/${featureImages[idx].sku}`);
+                  }
+                }}
                 className="group cursor-pointer"
               >
-                <div className="relative h-64 sm:h-72 lg:h-80 bg-gradient-to-br from-red-200 to-orange-200 rounded-lg overflow-hidden mb-4 sm:mb-6 shadow-lg">
-                  <motion.div
-                    whileHover={{ scale: 1.05 }}
-                    transition={{ duration: 0.5 }}
-                    className="absolute inset-0 bg-gradient-to-br from-red-300 to-yellow-400 flex items-center justify-center"
-                  >
-                    <p className="text-red-900 text-sm">
-                      Feature Image {idx + 1}
-                    </p>
-                  </motion.div>
+                <div className="relative h-64 sm:h-72 lg:h-80 rounded-lg overflow-hidden mb-4 sm:mb-6 shadow-lg group">
+                  {featureImages[idx]?.image_url ? (
+                    <motion.img
+                      whileHover={{ scale: 1.05 }}
+                      transition={{ duration: 0.5 }}
+                      src={resolveImageUrl(featureImages[idx].image_url)}
+                      alt={feature.title}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        e.target.style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <div className="absolute inset-0 bg-gradient-to-br from-red-300 to-yellow-400 flex items-center justify-center">
+                      <p className="text-red-900 text-sm">Premium Style</p>
+                    </div>
+                  )}
                 </div>
+
                 <h3 className="text-lg sm:text-xl font-semibold text-gray-900 mb-2">
                   {feature.title}
                 </h3>
@@ -645,7 +687,9 @@ const LandingPage = () => {
               </div>
             ) : featuredProducts.length === 0 ? (
               <div className="col-span-full text-center py-16">
-                <p className="text-gray-500">No products available at the moment</p>
+                <p className="text-gray-500">
+                  No products available at the moment
+                </p>
               </div>
             ) : (
               featuredProducts.map((product, index) => (
@@ -663,11 +707,14 @@ const LandingPage = () => {
                     <motion.img
                       whileHover={{ scale: 1.05 }}
                       transition={{ duration: 0.5 }}
-                      src={resolveImageUrl(product.image_url) || '/assets/placeholder.png'}
+                      src={
+                        resolveImageUrl(product.image_url) ||
+                        "/assets/placeholder.png"
+                      }
                       alt={product.product_display_name}
                       className="w-full h-full object-cover"
                       onError={(e) => {
-                        e.target.style.display = 'none';
+                        e.target.style.display = "none";
                       }}
                     />
                     {/* Fallback gradient if image fails */}
@@ -682,16 +729,25 @@ const LandingPage = () => {
                     <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-2 line-clamp-2">
                       {product.product_display_name}
                     </h3>
-                    <p className="text-xs text-gray-500 mb-3">{product.brand}</p>
+                    <p className="text-xs text-gray-500 mb-3">
+                      {product.brand}
+                    </p>
                     {product.ratings && (
                       <div className="flex items-center gap-2 mb-4">
                         <div className="flex">
-                          {[...Array(Math.floor(parseFloat(product.ratings) || 0))].map((_, i) => (
-                            <span key={i} className="text-yellow-400 text-xs">★</span>
+                          {[
+                            ...Array(
+                              Math.floor(parseFloat(product.ratings) || 0),
+                            ),
+                          ].map((_, i) => (
+                            <span key={i} className="text-yellow-400 text-xs">
+                              ★
+                            </span>
                           ))}
                         </div>
                         <span className="text-xs text-gray-600">
-                          {product.ratings} ({product.review_count || 0} reviews)
+                          {product.ratings} ({product.review_count || 0}{" "}
+                          reviews)
                         </span>
                       </div>
                     )}
@@ -700,11 +756,13 @@ const LandingPage = () => {
                         <span className="text-lg sm:text-xl font-bold text-gray-900">
                           ₹{Math.floor(parseFloat(product.price) || 0)}
                         </span>
-                        {product.msrp && parseFloat(product.msrp) > parseFloat(product.price) && (
-                          <span className="text-xs text-gray-500 line-through">
-                            ₹{Math.floor(parseFloat(product.msrp))}
-                          </span>
-                        )}
+                        {product.msrp &&
+                          parseFloat(product.msrp) >
+                            parseFloat(product.price) && (
+                            <span className="text-xs text-gray-500 line-through">
+                              ₹{Math.floor(parseFloat(product.msrp))}
+                            </span>
+                          )}
                       </div>
                       <motion.button
                         whileHover={{ scale: 1.05 }}
@@ -716,7 +774,7 @@ const LandingPage = () => {
                             name: product.product_display_name,
                             price: parseFloat(product.price),
                             quantity: 1,
-                            image: product.image_url
+                            image: product.image_url,
                           });
                         }}
                         className="px-3 sm:px-4 py-2 bg-red-700 text-white text-xs sm:text-sm font-medium hover:bg-red-800 transition-colors"
