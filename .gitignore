@@ -37,3 +37,4 @@ Thumbs.db
 htmlcov/
 backend/dump.rdb
 .venv
+venv/
