@@ -52,18 +52,18 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info(f"✅ WebSocket connected. Total connections: {len(self.active_connections)}")
+        pass  # Connected
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
-        logger.info(f"❌ WebSocket disconnected. Total connections: {len(self.active_connections)}")
+        pass  # Disconnected
 
     async def broadcast_delivery_update(self, order_id: str, fulfillment_data: dict):
         """Broadcast delivery status update to all connected clients with order details"""
         # Try to enrich with order details
         order_details = None
         try:
-            order = orders_repository.get_order_by_id(order_id)
+            order = orders_repository.get_order(order_id)
             if order:
                 order_details = {
                     "customer_id": order.get("customer_id"),
@@ -80,11 +80,15 @@ class ConnectionManager:
             "fulfillment": fulfillment_data,
             "order_details": order_details
         }
+        
+        current_status = fulfillment_data.get("current_status", "UNKNOWN")
+        logger.warning(f"📢 Broadcasting to {len(self.active_connections)} clients: Order {order_id} - Status: {current_status}")
+        
         disconnected = []
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
-                logger.info(f"📤 Sent delivery update for {order_id}")
+                logger.info(f"📤 Sent delivery update for {order_id} to client")
             except Exception as e:
                 logger.error(f"Error sending to WebSocket: {e}")
                 disconnected.append(connection)
@@ -108,9 +112,88 @@ app.add_middleware(
 scheduler = BackgroundScheduler()
 scheduler.start()
 
+def _auto_complete_stuck_orders():
+    """Periodic task to auto-complete orders stuck in OUT_FOR_DELIVERY."""
+    try:
+        stuck_order_ids = redis_utils.get_orders_by_status("OUT_FOR_DELIVERY", limit=1000)
+        
+        if stuck_order_ids:
+            completed_count = 0
+            for order_id in stuck_order_ids:
+                try:
+                    fulfillment_data = redis_utils.get_fulfillment(order_id)
+                    if not fulfillment_data:
+                        continue
+                    
+                    # Clean up data
+                    if isinstance(fulfillment_data.get('current_status'), str) and 'FulfillmentStatus.' in fulfillment_data['current_status']:
+                        fulfillment_data['current_status'] = fulfillment_data['current_status'].split('.')[-1]
+                    if isinstance(fulfillment_data.get('courier_partner'), str) and 'CourierPartner.' in fulfillment_data['courier_partner']:
+                        courier_val = fulfillment_data['courier_partner'].split('.')[-1]
+                        courier_mapping = {'DELHIVERY': 'Delhivery', 'BLUEDART': 'Bluedart', 'DTDC': 'DTDC', 'FEDEX': 'FedEx', 'LOCAL': 'Local Courier'}
+                        fulfillment_data['courier_partner'] = courier_mapping.get(courier_val, courier_val)
+                    
+                    # Clean up empty strings
+                    optional_fields = ['processing_at', 'packed_at', 'shipped_at', 'out_for_delivery_at', 'delivered_at', 'cancellation_reason', 'return_reason', 'delivery_window', 'address_added_at', 'delivery_boy_assigned_at', 'delivery_otp', 'delivery_otp_generated_at', 'delivery_otp_verified_at']
+                    for field in optional_fields:
+                        if fulfillment_data.get(field) == '' or fulfillment_data.get(field) == 'None':
+                            fulfillment_data[field] = None
+                    
+                    addr = fulfillment_data.get('delivery_address')
+                    if addr == '' or addr == '{}':
+                        fulfillment_data['delivery_address'] = None
+                    elif isinstance(addr, str):
+                        try:
+                            fulfillment_data['delivery_address'] = json.loads(addr)
+                        except:
+                            fulfillment_data['delivery_address'] = None
+                    
+                    fulfillment = FulfillmentRecord(**fulfillment_data)
+                    
+                    # Auto-complete to DELIVERED
+                    if fulfillment.current_status == FulfillmentStatus.OUT_FOR_DELIVERY:
+                        fulfillment.current_status = FulfillmentStatus.DELIVERED
+                        fulfillment.delivered_at = _now_iso()
+                        
+                        # Save to Redis
+                        fulfillment_dict = fulfillment.model_dump(mode='json') if hasattr(fulfillment, 'model_dump') else fulfillment.dict()
+                        redis_utils.store_fulfillment(order_id, fulfillment_dict)
+
+                        # Broadcast WebSocket event for DELIVERED
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(manager.broadcast_delivery_update(order_id, fulfillment_dict))
+                            loop.close()
+                            pass  # Broadcast sent (silent)
+                        except Exception as e:
+                            logger.error(f"Failed to broadcast WebSocket: {e}")
+                        
+                        # Update orders.csv
+                        try:
+                            order = orders_repository.get_order(order_id)
+                            if order:
+                                order['status'] = 'delivered'
+                                orders_repository.upsert_order_record(order)
+                                completed_count += 1
+                        except Exception as e:
+                            logger.warning(f"Could not update orders.csv for {order_id}: {e}")
+                except Exception as e:
+                    logger.error(f"Error auto-completing order {order_id}: {e}", exc_info=True)
+            
+            # Log summary only once per batch
+            if completed_count > 0:
+                logger.info(f"⚡ Auto-completed {completed_count} stuck order(s) to DELIVERED status")
+    except Exception as e:
+        logger.error(f"Error in auto-complete stuck orders task: {e}", exc_info=True)
+
+# Schedule periodic check every 10 seconds
+scheduler.add_job(_auto_complete_stuck_orders, 'interval', seconds=10, id='auto_complete_stuck_orders', replace_existing=True)
+logger.info("✅ Auto-complete stuck orders job scheduled (every 10 seconds)")
+
 
 def _schedule_next_progression(order_id: str):
-    """Schedule the next status progression after 60 seconds."""
+    """Schedule the next status progression after 30 seconds."""
     
     def progress_order():
         """Auto-progress the order to next status."""
@@ -134,6 +217,17 @@ def _schedule_next_progression(order_id: str):
                     'LOCAL': 'Local Courier'
                 }
                 fulfillment_data['courier_partner'] = courier_mapping.get(courier_val, courier_val)
+            
+            # Clean up empty strings to None for optional fields
+            optional_timestamp_fields = [
+                'processing_at', 'packed_at', 'shipped_at', 'out_for_delivery_at', 'delivered_at',
+                'cancellation_reason', 'return_reason', 'delivery_window', 'address_added_at',
+                'delivery_boy_assigned_at', 'delivery_otp', 'delivery_otp_generated_at', 'delivery_otp_verified_at'
+            ]
+            for field in optional_timestamp_fields:
+                if fulfillment_data.get(field) == '' or fulfillment_data.get(field) == 'None':
+                    fulfillment_data[field] = None
+            
             addr = fulfillment_data.get('delivery_address')
             if addr == '' or addr == '{}':
                 fulfillment_data['delivery_address'] = None
@@ -214,7 +308,7 @@ def _schedule_next_progression(order_id: str):
                         }
                         order['status'] = status_mapping.get(str(next_status), str(next_status).lower())
                         orders_repository.upsert_order_record(order)
-                        logger.info(f"✅ Updated order status in orders.csv: {order_id} → {order['status']}")
+                        pass  # Updated in CSV
                 except Exception as e:
                     logger.warning(f"Could not update order status in orders.csv: {e}")
                 
@@ -229,40 +323,65 @@ def _schedule_next_progression(order_id: str):
                     }
                 })
                 
-                logger.info(f"⏱️ AUTO-PROGRESSION: {order_id} → {next_status.value}")
+                # Auto-progression happening (silent)
                 
                 # Broadcast WebSocket event for OUT_FOR_DELIVERY and DELIVERED
                 if next_status in [FulfillmentStatus.OUT_FOR_DELIVERY, FulfillmentStatus.DELIVERED]:
+                    logger.warning(f"🔔 Broadcasting {next_status} status for order {order_id}")
                     try:
                         # Create event loop if needed and broadcast
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                         loop.run_until_complete(manager.broadcast_delivery_update(order_id, fulfillment_dict))
                         loop.close()
-                        logger.info(f"📡 WebSocket broadcast sent for {order_id} - {next_status.value}")
+                        logger.warning(f"✅ Successfully broadcasted {next_status} for order {order_id}")
                     except Exception as e:
-                        logger.error(f"Failed to broadcast WebSocket: {e}")
+                        logger.error(f"❌ Failed to broadcast WebSocket for {next_status}: {e}", exc_info=True)
                 
                 # Schedule next progression if not delivered
                 if next_status != FulfillmentStatus.DELIVERED:
-                    _schedule_next_progression(order_id)
-            else:
-                logger.info(f"✅ Order {order_id} completed all progression states")
+                    # For OUT_FOR_DELIVERY, schedule delayed progression to DELIVERED (30 second realistic delay)
+                    if next_status == FulfillmentStatus.OUT_FOR_DELIVERY:
+                        logger.warning(f"🚀 Scheduling delayed progression for {order_id} from OUT_FOR_DELIVERY → DELIVERED (30 second delay)")
+                        # Schedule with 30-second delay to simulate realistic delivery time and give customer time to see OUT_FOR_DELIVERY message
+                        job_id_delivered = f"progress_{order_id}_delivered_{uuid.uuid4()}"
+                        scheduler.add_job(
+                            progress_order,
+                            'date',
+                            run_date=datetime.now() + timedelta(seconds=30),
+                            id=job_id_delivered,
+                            replace_existing=False
+                        )
+                    else:
+                        _schedule_next_progression(order_id)
+                else:
+                    logger.warning(f"✅ Order {order_id} reached DELIVERED status - auto-progression complete")
         
         except Exception as e:
             logger.error(f"Error in auto-progression for {order_id}: {e}", exc_info=True)
     
-    # Schedule the progression to happen after 60 seconds
+    # Schedule the progression with adaptive timing
+    # PROCESSING -> PACKED is fast (5 sec), others are 30 sec
+    fulfillment_data = redis_utils.get_fulfillment(order_id)
+    if fulfillment_data:
+        current_status_raw = fulfillment_data.get('current_status', 'PROCESSING')
+        if isinstance(current_status_raw, str) and 'FulfillmentStatus.' in current_status_raw:
+            current_status_raw = current_status_raw.split('.')[-1]
+        delay_seconds = 10 if current_status_raw == 'PROCESSING' else 30
+    else:
+        delay_seconds = 10 # Default to 10 for new orders
+    
     # Use datetime.now() instead of utcnow() to match scheduler's timezone
     job_id = f"progress_{order_id}_{uuid.uuid4()}"
     scheduler.add_job(
         progress_order,
         'date',
-        run_date=datetime.now() + timedelta(seconds=60),
+        run_date=datetime.now() + timedelta(seconds=delay_seconds),
         id=job_id,
         replace_existing=False
     )
-    logger.info(f"⏰ Scheduled auto-progression for {order_id} in 60 seconds (job_id: {job_id})")
+    logger.info(f"📅 Scheduled next progression for {order_id} in {delay_seconds} seconds")
+    pass  # Job scheduled (silent)
 
 # ============================================================================
 # ENUMS
@@ -492,7 +611,7 @@ def _add_event(fulfillment: FulfillmentRecord, event_type: EventType, details: D
         details=details
     )
     fulfillment.events_log.append(event)
-    logger.info(f"Event logged for order {fulfillment.order_id}: {event_type}")
+    pass  # Event logged
 
 
 def _validate_status_transition(current: FulfillmentStatus, target: FulfillmentStatus) -> bool:
@@ -679,7 +798,7 @@ def start_fulfillment(request: StartFulfillmentRequest) -> FulfillmentRecord:
         processing_at=now,
         inventory_hold_id=request.inventory_hold_id,  # Store hold ID from inventory agent
         payment_transaction_id=request.payment_transaction_id,  # Store transaction ID from payment agent
-        auto_progression_enabled=True  # ENABLE auto-progression with 1-min intervals
+        auto_progression_enabled=True  # ENABLE auto-progression with 30-sec intervals
     )
     
     # Log initial event
@@ -698,10 +817,10 @@ def start_fulfillment(request: StartFulfillmentRequest) -> FulfillmentRecord:
     # Store in Redis
     redis_utils.store_fulfillment(request.order_id, fulfillment.dict())
     
-    # Schedule auto-progression (1 minute intervals)
+    # Schedule auto-progression (5-second initial delay, then 30-second intervals)
     _schedule_next_progression(request.order_id)
     
-    logger.info(f"Fulfillment started for order {request.order_id}: {fulfillment.fulfillment_id} - Auto-progression ENABLED (1 min intervals)")
+    pass  # Fulfillment started with auto-progression
     return fulfillment
 
 
@@ -723,6 +842,22 @@ def update_status(request: UpdateStatusRequest) -> FulfillmentRecord:
         logger.error(f"Fulfillment not found for order {request.order_id}")
         raise HTTPException(status_code=404, detail=f"Fulfillment not found for order {request.order_id}")
     
+    # Clean up data format before creating FulfillmentRecord
+    if isinstance(fulfillment_data.get('current_status'), str) and 'FulfillmentStatus.' in fulfillment_data['current_status']:
+        fulfillment_data['current_status'] = fulfillment_data['current_status'].split('.')[-1]
+    if isinstance(fulfillment_data.get('courier_partner'), str) and 'CourierPartner.' in fulfillment_data['courier_partner']:
+        courier_val = fulfillment_data['courier_partner'].split('.')[-1]
+        courier_mapping = {'DELHIVERY': 'Delhivery', 'BLUEDART': 'Bluedart', 'DTDC': 'DTDC', 'FEDEX': 'FedEx', 'LOCAL': 'Local Courier'}
+        fulfillment_data['courier_partner'] = courier_mapping.get(courier_val, courier_val)
+    addr = fulfillment_data.get('delivery_address')
+    if addr == '' or addr == '{}':
+        fulfillment_data['delivery_address'] = None
+    elif isinstance(addr, str):
+        try:
+            fulfillment_data['delivery_address'] = json.loads(addr)
+        except:
+            fulfillment_data['delivery_address'] = None
+    
     # Convert Redis dict to FulfillmentRecord object
     fulfillment = FulfillmentRecord(**fulfillment_data)
     
@@ -740,7 +875,8 @@ def update_status(request: UpdateStatusRequest) -> FulfillmentRecord:
     _update_status_timestamp(fulfillment, request.new_status)
     
     # Save updated fulfillment to Redis
-    redis_utils.store_fulfillment(request.order_id, fulfillment.dict())
+    fulfillment_dict = fulfillment.model_dump(mode='json') if hasattr(fulfillment, 'model_dump') else fulfillment.dict()
+    redis_utils.store_fulfillment(request.order_id, fulfillment_dict)
     
     # Log event
     redis_utils.add_fulfillment_event(request.order_id, {
@@ -751,8 +887,19 @@ def update_status(request: UpdateStatusRequest) -> FulfillmentRecord:
             "to_status": str(request.new_status)
         }
     })
+
+    # Broadcast WebSocket event for OUT_FOR_DELIVERY and DELIVERED
+    if request.new_status in [FulfillmentStatus.OUT_FOR_DELIVERY, FulfillmentStatus.DELIVERED]:
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(manager.broadcast_delivery_update(request.order_id, fulfillment_dict))
+            loop.close()
+            pass  # Broadcast sent (silent)
+        except Exception as e:
+            logger.error(f"Failed to broadcast WebSocket: {e}")
     
-    logger.info(f"Status updated for order {request.order_id}: {old_status} → {request.new_status}")
+    pass  # Status updated
     return fulfillment
 
 
@@ -777,6 +924,22 @@ def mark_delivered(request: MarkDeliveredRequest) -> FulfillmentRecord:
         logger.error(f"Fulfillment not found for order {request.order_id}")
         raise HTTPException(status_code=404, detail=f"Fulfillment not found for order {request.order_id}")
     
+    # Clean up data format before creating FulfillmentRecord
+    if isinstance(fulfillment_data.get('current_status'), str) and 'FulfillmentStatus.' in fulfillment_data['current_status']:
+        fulfillment_data['current_status'] = fulfillment_data['current_status'].split('.')[-1]
+    if isinstance(fulfillment_data.get('courier_partner'), str) and 'CourierPartner.' in fulfillment_data['courier_partner']:
+        courier_val = fulfillment_data['courier_partner'].split('.')[-1]
+        courier_mapping = {'DELHIVERY': 'Delhivery', 'BLUEDART': 'Bluedart', 'DTDC': 'DTDC', 'FEDEX': 'FedEx', 'LOCAL': 'Local Courier'}
+        fulfillment_data['courier_partner'] = courier_mapping.get(courier_val, courier_val)
+    addr = fulfillment_data.get('delivery_address')
+    if addr == '' or addr == '{}':
+        fulfillment_data['delivery_address'] = None
+    elif isinstance(addr, str):
+        try:
+            fulfillment_data['delivery_address'] = json.loads(addr)
+        except:
+            fulfillment_data['delivery_address'] = None
+    
     fulfillment = FulfillmentRecord(**fulfillment_data)
     
     # Can only deliver if currently out for delivery
@@ -792,7 +955,19 @@ def mark_delivered(request: MarkDeliveredRequest) -> FulfillmentRecord:
     fulfillment.delivered_at = _now_iso()
     
     # Save to Redis
-    redis_utils.store_fulfillment(request.order_id, fulfillment.dict())
+    fulfillment_dict = fulfillment.model_dump(mode='json') if hasattr(fulfillment, 'model_dump') else fulfillment.dict()
+    redis_utils.store_fulfillment(request.order_id, fulfillment_dict)
+
+    # Broadcast WebSocket event for DELIVERED
+    logger.warning(f"🔔 Broadcasting DELIVERED status for order {request.order_id}")
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.broadcast_delivery_update(request.order_id, fulfillment_dict))
+        loop.close()
+        logger.warning(f"✅ Successfully broadcasted DELIVERED for order {request.order_id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to broadcast WebSocket for DELIVERED: {e}", exc_info=True)
     
     # Log event
     redis_utils.add_fulfillment_event(request.order_id, {
@@ -805,7 +980,7 @@ def mark_delivered(request: MarkDeliveredRequest) -> FulfillmentRecord:
         }
     })
     
-    logger.info(f"Order {request.order_id} marked as delivered")
+    pass  # Order marked delivered
     return fulfillment
 
 

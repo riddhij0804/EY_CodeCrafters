@@ -207,11 +207,12 @@ const Chat = () => {
     }
   }, []);
 
-  // Track if payment message was already handled
+  // Track if payment/post-purchase/stylist messages were already handled
   const paymentMessageHandledRef = useRef(false);
-  // Track if post-purchase/stylist requests were already handled
   const postPurchaseHandledRef = useRef(false);
   const stylistHandledRef = useRef(false);
+  // Persist navigation state messages so they are always merged after backend updates
+  const navMessagesRef = useRef([]);
 
   // Payment success message is now handled directly in startOrRestoreSession()
   // to ensure it's added AFTER session messages are restored
@@ -239,36 +240,45 @@ const Chat = () => {
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
+          console.log('🔔 WebSocket message received:', payload);
+          
           if (payload?.type !== 'delivery_update') {
+            console.log('⚠️ Ignoring non-delivery_update message');
             return;
           }
 
           const orderId = payload.order_id;
           const fulfillment = payload.fulfillment || {};
-          const status = fulfillment.current_status || 'UNKNOWN';
+          const rawStatus = fulfillment.current_status || 'UNKNOWN';
+          const status = String(rawStatus).replace('FulfillmentStatus.', '').toUpperCase();
+
+          console.log(`📦 Delivery update for Order ${orderId}: ${status}`);
 
           const statusMessages = {
-            PROCESSING: '📦 Your order is being processed and packed.',
-            PACKED: '✅ Your order has been packed and is ready for shipment.',
-            SHIPPED: '🚚 Your order has been shipped!',
-            OUT_FOR_DELIVERY: '🏃 Your order is out for delivery!',
-            DELIVERED: '🎉 Your order has been delivered!',
+            PROCESSING: '📦 Your order is being carefully prepared with utmost care.\n\nOur team is picking and packing your items to ensure they arrive in perfect condition!',
+            PACKED: '✅ Great news! Your order has been packed and sealed.\n\nIt\'s now in our logistics network and will be picked up soon for shipment!',
+            SHIPPED: '🚚 Your order is on the move!\n\nYour package is now with our carrier and heading towards your doorstep. Exciting times ahead! 📍',
+            OUT_FOR_DELIVERY: '🏃🎯 Your delivery partner is on the way!\n\nYour order is out for delivery today. Please keep your phone handy for the delivery partner\'s call.',
+            DELIVERED: '🎉🌟 Success! Your order has been delivered!\n\nThank you for shopping with us! We hope you love your new purchase. Don\'t forget to share your photos and feedback with our community! 💝',
           };
 
           let responseText = `Order ${orderId}:\n\n${statusMessages[status] || `Status: ${status}`}`;
 
           if (status === 'OUT_FOR_DELIVERY') {
             if (fulfillment.delivery_boy_name) {
-              responseText += `\n\n👤 Delivery Partner: ${fulfillment.delivery_boy_name}`;
+              responseText += `\n\n👤 Your Delivery Partner: ${fulfillment.delivery_boy_name}`;
             }
             if (fulfillment.delivery_boy_phone) {
-              responseText += `\n📱 Phone: ${fulfillment.delivery_boy_phone}`;
+              responseText += `\n📱 Contact: ${fulfillment.delivery_boy_phone} (Ready to assist)`;
             }
             if (fulfillment.delivery_otp) {
-              responseText += `\n🔐 OTP for Verification: ${fulfillment.delivery_otp}`;
+              responseText += `\n🔐 Verification OTP: ${fulfillment.delivery_otp}\n\n💡 Share this OTP only with your delivery partner for verification.`;
             }
+          } else if (status === 'DELIVERED') {
+            responseText += `\n\n⭐ We'd love your feedback! Rate and review your purchase.`;
           }
 
+          console.log(`✅ Appending ${status} message to chat`);
           appendAgentMessage(responseText);
           setLastTrackedOrderId(orderId);
           setLastOrderStatus(status);
@@ -404,8 +414,34 @@ const Chat = () => {
     return String(text).replace(/^\s*["'“”]+|["'“”]+\s*$/g, '').trim();
   };
 
-  const renderMessageText = (text) => {
+  const renderMessageText = (text, metadata = {}) => {
     if (!text) return null;
+    
+    // Special formatting for payment success messages
+    if (metadata?.type === 'payment_success') {
+      const lines = String(text).split('\n');
+      return (
+        <div className="space-y-2">
+          {lines.map((line, idx) => {
+            if (line.includes('Order ID:') || line.includes('Payment ID:') || line.includes('Amount:')) {
+              const [label, value] = line.split(':');
+              return (
+                <div key={`payment-line-${idx}`} className="flex items-start gap-2">
+                  <span className="font-semibold text-orange-600">{label}:</span>
+                  <span className="font-mono text-gray-700">{value}</span>
+                </div>
+              );
+            }
+            return (
+              <div key={`payment-text-${idx}`} className={`${line.trim() === '' ? 'h-2' : ''}`}>
+                {line.trim() && renderMessageText(line)}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+    
     const parts = String(text).split(/\*\*(.*?)\*\*/g);
     return parts.map((part, index) => (
       index % 2 === 1
@@ -449,6 +485,30 @@ const Chat = () => {
   };
 
   // Session Management Functions
+  const fetchAndDisplayChatSummary = async (sessionToken) => {
+    try {
+      const summaryResp = await fetch(`${SALES_API}/api/chat-summary?session_token=${sessionToken}&mode=whatsapp`);
+      if (summaryResp.ok) {
+        const summaryData = await summaryResp.json();
+        if (summaryData.has_summary && summaryData.summary) {
+          // Add summary as first agent message
+          const summaryMessage = {
+            id: 0, // Special ID to keep it at top
+            text: summaryData.summary,
+            sender: 'agent',
+            timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            status: 'delivered',
+            metadata: { type: 'chat_summary' }
+          };
+          return summaryMessage;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch chat summary:', err);
+    }
+    return null;
+  };
+
   const startOrRestoreSession = async () => {
     setIsLoadingSession(true);
     try {
@@ -483,7 +543,11 @@ const Chat = () => {
               await fetchLoyaltyPoints(resolvedUserId);
             }
 
-            if (restoreData.session.data?.chat_context?.length) {
+            // Restore chat history for returning users
+            const hasHistory = restoreData.session.data?.chat_context?.length > 0;
+            const hasCart = restoreData.session.data?.cart?.length > 0;
+            let allMessages = [];
+            if (hasHistory) {
               const chatMessages = restoreData.session.data.chat_context.map((msg, idx) => ({
                 id: idx + 1,
                 text: msg.message,
@@ -492,81 +556,43 @@ const Chat = () => {
                 status: 'read',
                 cards: msg.metadata?.cards || []
               }));
-              
-              // Check for pending payment success message from navigation state
-              if (location.state?.paymentSuccess && location.state?.message && !paymentMessageHandledRef.current) {
-                paymentMessageHandledRef.current = true;
-                const paymentMessage = {
-                  id: chatMessages.length + 1,
-                  text: location.state.message,
-                  sender: 'agent',
-                  timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                  status: 'delivered',
-                  metadata: { type: 'payment_success', orderId: location.state.orderId, paymentId: location.state.paymentId }
-                };
-                chatMessages.push(paymentMessage);
-                navigate(location.pathname, { replace: true, state: {} });
+              allMessages.push(...chatMessages);
+              if (hasHistory || hasCart) {
+                const summaryMessage = await fetchAndDisplayChatSummary(storedToken);
+                if (summaryMessage) {
+                  allMessages.push({
+                    ...summaryMessage,
+                    id: chatMessages.length + 1
+                  });
+                }
               }
-              
-              // Check for post-purchase request from navigation state
-              if (location.state?.postPurchaseRequest && !postPurchaseHandledRef.current) {
-                postPurchaseHandledRef.current = true;
-                const postPurchaseMessage = {
-                  id: chatMessages.length + 1,
-                  text: `📦 Post-Purchase Support for Order ${location.state.orderId}\n\nHow can I help you today? Please select an option:`,
-                  sender: 'agent',
-                  timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                  status: 'delivered',
-                  postPurchaseOptions: {
-                    orderId: location.state.orderId,
-                    orderItems: location.state.orderItems,
-                    userId: location.state.userId,
-                    productName: location.state.orderItems?.[0]?.name || null
-                  }
-                };
-                chatMessages.push(postPurchaseMessage);
-                navigate(location.pathname, { replace: true, state: {} });
-              }
-              
-              // Check for stylist request from navigation state
-              if (location.state?.stylistRequest && !stylistHandledRef.current) {
-                stylistHandledRef.current = true;
-                const stylistMessage = {
-                  id: chatMessages.length + 1,
-                  text: `👗 Fetching personalized styling suggestions for your order...`,
-                  sender: 'agent',
-                  timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                  status: 'delivered',
-                  metadata: { 
-                    type: 'stylist_request',
-                    orderId: location.state.orderId,
-                    product: location.state.product
-                  },
-                  stylistPending: true,
-                  stylistProduct: location.state.product
-                };
-                chatMessages.push(stylistMessage);
-                navigate(location.pathname, { replace: true, state: {} });
-              }
-              
-              setMessages(chatMessages);
-            } else if (location.state?.paymentSuccess && location.state?.message && !paymentMessageHandledRef.current) {
-              // No chat context but payment message exists
-              paymentMessageHandledRef.current = true;
-              setMessages([{
+            } else {
+              allMessages.push({
                 id: 1,
+                text: `Welcome to WhatsApp Shopping! I'm your personal shopping assistant. How can I help you today?`,
+                sender: 'agent',
+                timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                status: 'delivered'
+              });
+            }
+
+            // Always merge navMessagesRef.current after backend updates
+            if (location.state?.paymentSuccess && location.state?.message && !paymentMessageHandledRef.current) {
+              paymentMessageHandledRef.current = true;
+              navMessagesRef.current.push({
+                id: Date.now(),
                 text: location.state.message,
                 sender: 'agent',
                 timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
                 status: 'delivered',
                 metadata: { type: 'payment_success', orderId: location.state.orderId, paymentId: location.state.paymentId }
-              }]);
+              });
               navigate(location.pathname, { replace: true, state: {} });
-            } else if (location.state?.postPurchaseRequest && !postPurchaseHandledRef.current) {
-              // No chat context but post-purchase request exists
+            }
+            if (location.state?.postPurchaseRequest && !postPurchaseHandledRef.current) {
               postPurchaseHandledRef.current = true;
-              setMessages([{
-                id: 1,
+              navMessagesRef.current.push({
+                id: Date.now() + 1,
                 text: `📦 Post-Purchase Support for Order ${location.state.orderId}\n\nHow can I help you today? Please select an option:`,
                 sender: 'agent',
                 timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
@@ -577,13 +603,13 @@ const Chat = () => {
                   userId: location.state.userId,
                   productName: location.state.orderItems?.[0]?.name || null
                 }
-              }]);
+              });
               navigate(location.pathname, { replace: true, state: {} });
-            } else if (location.state?.stylistRequest && !stylistHandledRef.current) {
-              // No chat context but stylist request exists
+            }
+            if (location.state?.stylistRequest && !stylistHandledRef.current) {
               stylistHandledRef.current = true;
-              setMessages([{
-                id: 1,
+              navMessagesRef.current.push({
+                id: Date.now() + 2,
                 text: `👗 Fetching personalized styling suggestions for your order...`,
                 sender: 'agent',
                 timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
@@ -595,9 +621,10 @@ const Chat = () => {
                 },
                 stylistPending: true,
                 stylistProduct: location.state.product
-              }]);
+              });
               navigate(location.pathname, { replace: true, state: {} });
             }
+            setMessages([...allMessages, ...navMessagesRef.current]);
             return;
           }
         } catch (err) {
@@ -1590,16 +1617,32 @@ const Chat = () => {
       const finalPrice = discountData.final_total;
       const savings = originalPrice - finalPrice;
 
-      const discountMessage = `🛒 **Purchase Summary**\n\n` +
+      // Calculate upgrade motivation
+      let upgradeMessage = '';
+
+      if (discountData.points_to_next_tier > 0 && discountData.next_tier) {
+        const approxSpendNeeded = discountData.points_to_next_tier * 100; // 1 point = ₹100 rule
+        
+        upgradeMessage =
+          `\n🚀 Almost There!\n` +
+          `You're just ${discountData.points_to_next_tier} points away from ${discountData.next_tier.toUpperCase()} tier!\n` +
+          `Spend approx ₹${approxSpendNeeded.toLocaleString()} more to unlock higher discounts & exclusive rewards.\n`;
+      } else {
+        upgradeMessage =
+          `\n👑 You're already enjoying the highest tier benefits!\n`;
+      }
+
+      const discountMessage =
+        `🛒 **Purchase Summary**\n\n` +
         `📦 Product: ${product.name}\n` +
         `💰 Original Price: ₹${originalPrice}\n` +
-        `${discountData.message}\n` +
         `💸 You Save: ₹${savings.toFixed(2)}\n` +
         `✅ Final Price: ₹${finalPrice.toFixed(2)}\n\n` +
-        `🎁 Your Loyalty Status:\n` +
+        `🎁 Your Loyalty Status\n` +
         `🏅 Tier: ${loyaltyTier}\n` +
-        `💎 Points: ${loyaltyPoints}\n\n` +
-        `Ready to proceed with payment?`;
+        `💎 Points: ${loyaltyPoints}\n` +
+        upgradeMessage +
+        `\nReady to proceed with payment?`;
 
       // Add discount summary message
       const discountMsg = {
@@ -2361,8 +2404,8 @@ const Chat = () => {
             >
               <div className="text-sm leading-relaxed whitespace-pre-wrap break-words">
                 {message.text && message.text.length > 800 && !expandedMessages.has(message.id)
-                  ? renderMessageText(`${message.text.slice(0, 380)}... `)
-                  : renderMessageText(message.text)}
+                  ? renderMessageText(`${message.text.slice(0, 380)}... `, message.metadata)
+                  : renderMessageText(message.text, message.metadata)}
                 {message.text && message.text.length > 800 && (
                   <button
                     onClick={() => toggleExpandMessage(message.id)}

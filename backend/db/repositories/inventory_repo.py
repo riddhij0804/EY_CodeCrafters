@@ -4,7 +4,7 @@ Inventory repository: reads stock from Supabase.
 Expects an 'inventory' table with columns: sku, store_id, quantity
 """
 from typing import Dict, Any, Optional
-from ..supabase_client import select, is_enabled
+from ..supabase_client import supabase, is_enabled
 
 
 def _aggregate_rows(rows) -> Dict[str, Any]:
@@ -43,20 +43,34 @@ def get_stock(sku: str) -> Optional[Dict[str, Any]]:
         {"online": int, "stores": {store_id: qty}, "total": int}
         or None on error/empty
     """
-    if not is_enabled():
+    if not is_enabled() or supabase is None:
+        print("[inventory_repo] Supabase not enabled or client not available")
         return None
     
+    # Normalize SKU before querying
+    normalized_sku = str(sku).strip().upper()
+    
+    # Log what we are querying
+    print(f"[inventory_repo] Querying Supabase for SKU={normalized_sku}")
+    
     try:
-        # Quote string values in PostgREST filter params to avoid 400 Bad Request
-        rows = select("inventory", params=f"sku=eq.'{sku}'", columns="sku,store_id,quantity")
-        if not rows:
-            print(f"[inventory_repo] No rows for SKU={sku}")
+        # Use correct Supabase query syntax
+        response = supabase.table("inventory").select("*").eq("sku", normalized_sku).execute()
+        
+        # Log raw response
+        print("Supabase raw response:", response)
+        
+        # Fix response checking
+        if response.data and len(response.data) > 0:
+            result = _aggregate_rows(response.data)
+            print(f"[inventory_repo] Supabase returned {len(response.data)} rows for SKU={normalized_sku}, result={result}")
+            return result
+        else:
+            print(f"[inventory_repo] No data in response for SKU={normalized_sku}")
             return None
-        result = _aggregate_rows(rows)
-        print(f"[inventory_repo] Supabase returned {len(rows)} rows for SKU={sku}, total={result['total']}")
-        return result
+            
     except Exception as e:
-        print(f"[inventory_repo] Error querying SKU={sku}: {e}")
+        print(f"[inventory_repo] Error querying SKU={normalized_sku}: {e}")
         return None
 
 
@@ -93,6 +107,8 @@ def decrement_stock(sku: str, location: str, amount: int) -> bool:
             # Write not enabled; skip
             return False
 
+        # Normalize SKU
+        sku = sku.strip().upper()
         store_id = _normalize_store_id(location)
         # Find existing row quantity (don't assume an 'id' column exists)
         row = select_one("inventory", params=f"sku=eq.'{sku}'&store_id=eq.'{store_id}'", columns="quantity")
@@ -152,14 +168,17 @@ def upsert_stock(sku: str, location: str, quantity: int) -> bool:
             return False
 
         store_id = _normalize_store_id(location)
+        
+        # Payload without inventory_id - let Supabase auto-generate if needed
+        # Focus on the composite key: sku + store_id
         payload = {
             "sku": sku,
             "store_id": store_id,
             "quantity": int(quantity)
         }
 
-        # Use upsert without explicit on_conflict to create the row when missing.
-        upsert("inventory", payload)
+        # Upsert on sku+store_id composite key
+        upsert("inventory", payload, conflict_column="sku,store_id")
         return True
     except Exception as e:
         print(f"[inventory_repo] Failed to upsert stock for {sku} at {location}: {e}")

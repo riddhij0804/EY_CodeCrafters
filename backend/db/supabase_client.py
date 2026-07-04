@@ -16,12 +16,19 @@ from dotenv import load_dotenv
 # Load .env from backend folder (search upward from this file)
 _this_dir = Path(__file__).resolve().parent
 _backend_env = _this_dir.parent / ".env"
+print(f"[supabase_client] Looking for .env at: {_backend_env}")
 if _backend_env.exists():
     load_dotenv(_backend_env)
     print(f"[supabase_client] Loaded .env from: {_backend_env}")
 else:
-    load_dotenv()  # fallback to default search
-    print("[supabase_client] Using default dotenv search")
+    # Try searching from current working directory
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        load_dotenv(cwd_env)
+        print(f"[supabase_client] Loaded .env from cwd: {cwd_env}")
+    else:
+        load_dotenv()  # fallback to default search
+        print("[supabase_client] Using default dotenv search")
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,19 @@ logger.info(
     FEATURE_SUPABASE_READ,
     FEATURE_SUPABASE_WRITE,
 )
+
+# Add supabase client after environment variables are loaded
+try:
+    from supabase import create_client, Client
+    if SUPABASE_URL and SUPABASE_ANON_KEY:
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        print("[supabase_client] Supabase client initialized")
+    else:
+        supabase = None
+        print("[supabase_client] Supabase credentials not found")
+except ImportError:
+    supabase = None
+    print("[supabase_client] Supabase client not available (install supabase-py)")
 
 
 def _get_read_key() -> str:
@@ -128,6 +148,49 @@ def select_one(
     return rows[0] if rows else None
 
 
+def insert(
+    table: str,
+    rows: Union[Dict[str, Any], Sequence[Dict[str, Any]]],
+    timeout: int = 10,
+) -> Optional[List[Dict[str, Any]]]:
+    """Insert row(s) into a Supabase table."""
+    if not is_write_enabled():
+        logger.debug("[supabase_client] Insert skipped; feature disabled")
+        return None
+
+    payload: List[Dict[str, Any]]
+    if isinstance(rows, dict):
+        payload = [rows]
+    else:
+        payload = list(rows)
+
+    if not payload:
+        return None
+
+    url = _build_url(table)
+    headers = _get_headers(
+        _get_write_key(),
+        extra={"Prefer": "return=representation"},
+    )
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        if resp.content:
+            return resp.json()
+        return None
+    except requests.exceptions.HTTPError as exc:
+        status = getattr(exc.response, "status_code", "N/A")
+        body = getattr(exc.response, "text", str(exc))[:400]
+        logger.warning(
+            "[supabase_client] Insert failed for %s (%s): %s", table, status, body
+        )
+        raise
+    except requests.exceptions.RequestException as exc:
+        logger.warning("[supabase_client] Insert request error for %s: %s", table, exc)
+        raise
+
+
 def upsert(
     table: str,
     rows: Union[Dict[str, Any], Sequence[Dict[str, Any]]],
@@ -211,3 +274,16 @@ def update(
     except requests.exceptions.RequestException as exc:
         logger.warning("[supabase_client] Update request error for %s: %s", table, exc)
         raise
+
+
+# Export the supabase client instance
+__all__ = [
+    "supabase",
+    "is_enabled",
+    "is_write_enabled",
+    "select",
+    "select_one",
+    "insert",
+    "update",
+    "upsert",
+]

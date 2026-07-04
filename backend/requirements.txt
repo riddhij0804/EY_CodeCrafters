@@ -1,7 +1,7 @@
+# --- Supabase Client ---
+supabase
+
 # --- Agent Frameworks ---
-langchain
-langchain-core
-langchain-community
 langgraph
 
 # --- LLM Providers ---
@@ -58,3 +58,5 @@ torchvision
 pillow
 opencv-contrib-python
 faiss-cpu
+supabase
+

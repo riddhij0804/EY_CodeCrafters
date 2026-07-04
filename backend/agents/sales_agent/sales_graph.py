@@ -32,6 +32,22 @@ from vertex_intent_detector import detect_intent as vertex_detect_intent
 # Agent client (async unified client for workers)
 from agent_client import call_agent
 # Orders repository for thread-safe CSV persistence
+
+# ── Recommendation Flow Manager (progressive clarification) ──────────────
+try:
+    from services.recommendation_flow_manager import (
+        detect_mode as _rfm_detect_mode,
+        absorb_message as _rfm_absorb,
+        init_context as _rfm_init,
+        is_ready as _rfm_is_ready,
+        next_question as _rfm_next_question,
+        build_payload as _rfm_build_payload,
+    )
+    _RFM_AVAILABLE = True
+except ImportError as _rfm_err:
+    _RFM_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️  Recommendation flow manager unavailable: {_rfm_err}")
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import orders_repository
     # ...existing code...
@@ -103,6 +119,14 @@ WORKER_SERVICES = {
 }
 
 WORKER_TIMEOUT_SECONDS = int(os.getenv("SALES_AGENT_WORKER_TIMEOUT", "25"))
+
+# ---------------------------------------------------------------------------
+# In-process store for recommendation clarification state.
+# Keyed by session_token so each conversation has its own context.
+# This is far more reliable than storing/restoring via chat-message metadata.
+# ---------------------------------------------------------------------------
+_REC_CTX_STORE: Dict[str, Dict[str, Any]] = {}   # session_token → recommendation_context
+_REC_AWAITING_STORE: Dict[str, bool] = {}         # session_token → awaiting clarification?
 
 
 # ============================================================================
@@ -518,6 +542,98 @@ async def detect_intent_node(state: SalesAgentState) -> SalesAgentState:
         Updated state with detected intent and entities
     """
     logger.info(f"🤖 Detecting intent for: '{state['message'][:100]}...'")
+
+    # ── NEW: Recommendation clarification already in progress ────────────
+    # If the previous turn asked a clarification question for recommendations,
+    # skip Vertex AI entirely and route straight back to clarifying_questions.
+    metadata = state.get("metadata", {})
+    session_token = state.get("session_token", "")
+    # Check in-process store first; fall back to restored metadata flag
+    if _REC_AWAITING_STORE.get(session_token) or metadata.get("awaiting_recommendation_clarification"):
+        logger.info("🔁 Continuing recommendation clarification — skipping intent detection")
+        state["intent"] = "recommendation"
+        state["confidence"] = 1.0
+        state["entities"] = {}
+        state["intent_method"] = "recommendation_clarification_continuation"
+        return state
+
+    # Check if we're awaiting clarification from previous interaction
+    if metadata.get("awaiting_clarification"):
+        logger.info("📝 Processing clarifying question answers...")
+        
+        # Parse user's answers to clarifying questions
+        message = state["message"].lower().strip()
+        preferences = {}
+        
+        # Extract usage context
+        if any(word in message for word in ["running", "sports", "jogging", "marathon", "gym", "workout"]):
+            preferences["usage"] = "running_sports"
+        elif any(word in message for word in ["office", "work", "formal", "business", "corporate"]):
+            preferences["usage"] = "office_formal"
+        elif any(word in message for word in ["party", "celebration", "event", "special", "wedding"]):
+            preferences["usage"] = "party_special"
+        elif any(word in message for word in ["casual", "everyday", "daily", "home", "relaxed"]):
+            preferences["usage"] = "casual_everyday"
+        
+        # Extract budget
+        if "under" in message or "below" in message:
+            import re
+            budget_match = re.search(r'₹?(\d+)', message)
+            if budget_match:
+                preferences["budget_max"] = int(budget_match.group(1))
+        elif "2000" in message or "₹2000" in message:
+            preferences["budget_max"] = 2000
+        elif "5000" in message or "₹5000" in message:
+            preferences["budget_max"] = 5000
+        elif "10000" in message or "₹10000" in message:
+            preferences["budget_max"] = 10000
+        
+        # Extract colors
+        color_map = {
+            "black": "black", "white": "white", "blue": "blue", "red": "red",
+            "green": "green", "grey": "grey", "gray": "gray", "yellow": "yellow",
+            "purple": "purple", "pink": "pink", "orange": "orange", "brown": "brown"
+        }
+        for color_name, color_value in color_map.items():
+            if color_name in message:
+                preferences["color"] = color_value
+                break
+        
+        # Store preferences in session
+        if preferences:
+            from datetime import datetime
+            preferences["last_updated"] = datetime.now().isoformat()
+            
+            # Update session with preferences
+            session_token = state.get("session_token")
+            if session_token:
+                try:
+                    update_payload = {
+                        "action": "update_preferences",
+                        "preferences": preferences
+                    }
+                    update_response = requests.post(
+                        f"{os.getenv('SESSION_MANAGER_URL', 'http://localhost:8000')}/session/update",
+                        json=update_payload,
+                        headers={"X-Session-Token": session_token},
+                        timeout=5
+                    )
+                    if update_response.status_code == 200:
+                        logger.info(f"✅ Stored preferences: {preferences}")
+                    else:
+                        logger.warning(f"⚠️ Failed to store preferences: {update_response.status_code}")
+                except Exception as e:
+                    logger.error(f"❌ Error storing preferences: {e}")
+        
+        # Clear awaiting_clarification flag and route to recommendations
+        metadata["awaiting_clarification"] = False
+        state["intent"] = "recommendation"
+        state["confidence"] = 1.0
+        state["entities"] = preferences  # Use preferences as entities
+        state["intent_method"] = "clarification_response"
+        
+        logger.info(f"✅ Processed clarification response, routing to recommendations")
+        return state
     
     # Special handling for __CHECKOUT__ command from web UI
     if state["message"].strip() == "__CHECKOUT__":
@@ -628,6 +744,7 @@ async def detect_intent_node(state: SalesAgentState) -> SalesAgentState:
 # ============================================================================
 
 def route_by_intent(state: SalesAgentState) -> Literal[
+    "clarifying_questions",
     "recommendation_worker",
     "inventory_worker",
     "payment_worker",
@@ -656,13 +773,13 @@ def route_by_intent(state: SalesAgentState) -> Literal[
     
     # Intent to worker mapping
     intent_mapping = {
-        "recommendation": "recommendation_worker",
-        "gifting": "recommendation_worker",  # Gifting uses recommendation service
+        "recommendation": "clarifying_questions",  # Route to clarifying questions first
+        "gifting": "clarifying_questions",  # Gifting uses recommendation service
         "inventory": "inventory_worker",
         "payment": "payment_worker",
         "loyalty": "loyalty_worker",  # Loyalty points and coupons
-        "comparison": "recommendation_worker",  # Comparison uses recommendation
-        "trend": "recommendation_worker",  # Trends use recommendation
+        "comparison": "clarifying_questions",  # Comparison uses recommendation
+        "trend": "recommendation_worker",  # Trends go directly to recommendation
         "ambient_commerce": "ambient_commerce_worker",
         # Route order tracking and support to fulfillment (not post-purchase)
         "support": "fulfillment_worker",
@@ -681,17 +798,146 @@ def route_by_intent(state: SalesAgentState) -> Literal[
 # WORKER NODES: CALL MICROSERVICES
 # ============================================================================
 
+async def clarifying_questions_node(state: SalesAgentState) -> SalesAgentState:
+    """
+    Progressive clarification node powered by RecommendationFlowManager.
+
+    Behaviour
+    ---------
+    1. Detect or restore the recommendation mode (normal / gifting_genius / trendseer).
+    2. Absorb the current user message into the accumulated recommendation_context.
+    3. If more required fields are missing AND we haven't hit the attempt cap:
+       – Ask the next natural, single-sentence question.
+       – Set ``_skip_recommendation=True`` so call_recommendation_worker is a no-op.
+       – Persist recommendation_context + awaiting flag in metadata.
+    4. Once ready (all required fields collected, or attempt/vague cap reached):
+       – Clear the awaiting flag.
+       – Let the graph edge call call_recommendation_worker which will use the
+         structured payload built by the flow manager.
+
+    Backward-compat: falls back to the legacy entity-based flow when the
+    recommendation flow manager is not available.
+    """
+    logger.info("🤔 Clarifying questions node — recommendation flow manager check...")
+
+    metadata = state.get("metadata", {}) or {}
+    message = state.get("message", "")
+    entities = state.get("entities", {}) or {}
+
+    # ── Fallback: flow manager not installed ─────────────────────────────
+    if not _RFM_AVAILABLE:
+        logger.warning("⚠️  Flow manager unavailable, using legacy clarify logic")
+        # Legacy: if entities have enough context, go straight to recommendation
+        has_usage = entities.get("usage") or entities.get("occasion") or entities.get("category")
+        has_budget = entities.get("price_max") or entities.get("price_min")
+        if has_usage or has_budget:
+            return state  # recommendation_worker will be called by graph edge
+        state["response"] = (
+            "I'd love to help! 😊 What kind of products are you looking for? "
+            "(e.g. shoes, clothing, accessories)"
+        )
+        state["cards"] = []
+        state["metadata"]["_skip_recommendation"] = True
+        state["metadata"]["awaiting_recommendation_clarification"] = True
+        return state
+
+    # ── Restore or initialise recommendation_context ──────────────────────
+    # Primary source: in-process store (survives across turns reliably)
+    # Fallback: metadata restored from session chat history
+    session_token = state.get("session_token", "")
+    ctx: dict = dict(
+        _REC_CTX_STORE.get(session_token)
+        or metadata.get("recommendation_context")
+        or {}
+    )
+    if not ctx:
+        ctx = _rfm_init()
+
+    # ── Detect mode (only on first turn or when not yet set) ──────────────
+    if not ctx.get("mode"):
+        ctx["mode"] = _rfm_detect_mode(message, entities)
+        # Seed context from Vertex AI entities on the first turn
+        if entities.get("recipient_relation") and not ctx.get("recipient_relation"):
+            ctx["recipient_relation"] = entities["recipient_relation"]
+            # Auto-infer gender from the seeded relation
+            if not ctx.get("recipient_gender"):
+                from services.recommendation_flow_manager import GENDER_FROM_RELATION as _GFR
+                ctx["recipient_gender"] = _GFR.get(entities["recipient_relation"], "")
+        if entities.get("occasion") and not ctx.get("occasion"):
+            ctx["occasion"] = entities["occasion"]
+        if entities.get("category") and not ctx.get("category"):
+            ctx["category"] = entities["category"]
+
+    mode = ctx["mode"]
+    logger.info(f"📊 Recommendation mode: {mode} | clarification_attempts: {ctx.get('clarification_attempts', 0)}")
+
+    # ── TrendSeer: no clarification needed, proceed immediately ──────────
+    if mode == "trendseer":
+        logger.info("🔮 TrendSeer mode — calling recommendation API immediately")
+        _REC_CTX_STORE[session_token] = ctx
+        _REC_AWAITING_STORE[session_token] = False
+        state["metadata"]["recommendation_context"] = ctx
+        state["metadata"]["_skip_recommendation"] = False
+        state["metadata"]["awaiting_recommendation_clarification"] = False
+        return state
+
+    # ── Absorb the user's current message into context ────────────────────
+    ctx = _rfm_absorb(message, ctx)
+
+    # ── Check readiness ───────────────────────────────────────────────────
+    if _rfm_is_ready(ctx):
+        logger.info("✅ Sufficient context collected — proceeding to recommendation API")
+        ctx["clarification_stage"] = "complete"
+        _REC_CTX_STORE[session_token] = ctx
+        _REC_AWAITING_STORE[session_token] = False
+        state["metadata"]["recommendation_context"] = ctx
+        state["metadata"]["_skip_recommendation"] = False
+        state["metadata"]["awaiting_recommendation_clarification"] = False
+        return state
+
+    # ── Still missing required fields — ask the next question ────────────
+    question = _rfm_next_question(ctx)
+    ctx["clarification_attempts"] = ctx.get("clarification_attempts", 0) + 1
+
+    if not question:
+        # Safety net: flow manager couldn't generate a question but not ready
+        logger.warning("⚠️  No question generated but context incomplete — proceeding")
+        ctx["clarification_stage"] = "complete"
+        _REC_CTX_STORE[session_token] = ctx
+        _REC_AWAITING_STORE[session_token] = False
+        state["metadata"]["recommendation_context"] = ctx
+        state["metadata"]["_skip_recommendation"] = False
+        state["metadata"]["awaiting_recommendation_clarification"] = False
+        return state
+
+    logger.info(f"❓ Asking clarification question (attempt {ctx['clarification_attempts']}): {question[:80]}...")
+
+    state["response"] = question
+    state["cards"] = []
+    _REC_CTX_STORE[session_token] = ctx
+    _REC_AWAITING_STORE[session_token] = True
+    state["metadata"]["recommendation_context"] = ctx
+    state["metadata"]["_skip_recommendation"] = True          # tell recommendation_worker to skip
+    state["metadata"]["awaiting_recommendation_clarification"] = True  # tell detect_intent_node next turn
+    return state
+
 async def call_recommendation_worker(state: SalesAgentState) -> SalesAgentState:
-    """Call recommendation microservice."""
+    """Call recommendation microservice with structured payload."""
     logger.info("📞 Calling Recommendation Worker...")
-    
+
     state["worker_service"] = "recommendation"
     state["worker_url"] = WORKER_SERVICES["recommendation"]
-    
+    session_token = state.get("session_token", "")
+
+    # ── Skip if clarifying_questions_node is still collecting context ─────
+    if state.get("metadata", {}).get("_skip_recommendation"):
+        logger.info("⏸️  Recommendation API skipped — clarification still in progress")
+        return state
+
     try:
         # Extract customer_id dynamically from phone number or metadata
         customer_id = state["metadata"].get("customer_id") or state["metadata"].get("user_id")
-        
+
         # If no user_id, try to resolve from phone number in session
         if not customer_id:
             phone = state["metadata"].get("phone")
@@ -699,51 +945,61 @@ async def call_recommendation_worker(state: SalesAgentState) -> SalesAgentState:
                 customer_id = _customer_phone_map[str(phone)]
                 logger.info(f"📞 Resolved customer ID {customer_id} from phone {phone}")
             else:
-                # Fallback: use first customer from mapping if available
                 customer_id = next(iter(_customer_phone_map.values())) if _customer_phone_map else "101"
                 logger.warning(f"⚠️  No phone mapping found, using fallback customer ID: {customer_id}")
-        
-        # Build payload for recommendation API
-        payload = {
-            "customer_id": str(customer_id),  # Ensure string type for API validation
-            "mode": "normal",  # Default mode
-            "intent": state["entities"],
-            "current_cart_skus": state["metadata"].get("cart_skus", []),
-            "limit": 5
-        }
-        
-        # Determine mode based on intent
-        if state["intent"] == "gifting" or state["entities"].get("occasion") in ["birthday", "gift", "anniversary"]:
-            payload["mode"] = "gifting_genius"
-            payload["recipient_relation"] = state["entities"].get("recipient_relation", "friend")
-            
-            # Infer gender from relation if not explicitly provided
-            recipient_relation = state["entities"].get("recipient_relation", "")
-            explicit_gender = state["entities"].get("gender")
-            payload["recipient_gender"] = explicit_gender or infer_gender_from_relation(recipient_relation) or "unisex"
-            
-            payload["occasion"] = state["entities"].get("occasion", "gift")
-            logger.info(f"🎁 Gifting mode: relation={recipient_relation}, inferred_gender={payload['recipient_gender']}, occasion={payload['occasion']}")
-        elif state["intent"] == "trend":
-            payload["mode"] = "trendseer"
+
+        cart_skus = state["metadata"].get("cart_skus", [])
+        entities = state.get("entities", {}) or {}
+
+        # ── Prefer structured payload from flow manager ───────────────────
+        # Use in-process store as primary source; fall back to state metadata
+        rec_ctx = _REC_CTX_STORE.get(session_token) or state.get("metadata", {}).get("recommendation_context")
+        if _RFM_AVAILABLE and rec_ctx and rec_ctx.get("mode"):
+            payload = _rfm_build_payload(
+                ctx=rec_ctx,
+                customer_id=str(customer_id),
+                cart_skus=cart_skus,
+                entities=entities,
+            )
+            logger.info(f"📦 Using flow-manager payload (mode={rec_ctx.get('mode')})")
+        else:
+            # ── Legacy payload construction (backward-compat) ─────────────
+            payload = {
+                "customer_id": str(customer_id),
+                "mode": "normal",
+                "intent": entities,
+                "current_cart_skus": cart_skus,
+                "limit": 5,
+            }
+
+            if state["intent"] == "gifting" or entities.get("occasion") in ["birthday", "gift", "anniversary"]:
+                payload["mode"] = "gifting_genius"
+                payload["recipient_relation"] = entities.get("recipient_relation", "friend")
+                recipient_relation = entities.get("recipient_relation", "")
+                explicit_gender = entities.get("gender")
+                payload["recipient_gender"] = explicit_gender or infer_gender_from_relation(recipient_relation) or "unisex"
+                payload["occasion"] = entities.get("occasion", "gift")
+                logger.info(f"🎁 Legacy gifting mode: relation={recipient_relation}")
+            elif state["intent"] == "trend":
+                payload["mode"] = "trendseer"
+
+            # Add budget filters if present
+            if "price_max" in entities:
+                payload.setdefault("intent", {})
+                if isinstance(payload.get("intent"), dict):
+                    payload["intent"]["budget_max"] = entities["price_max"]
+            if "price_min" in entities:
+                payload.setdefault("intent", {})
+                if isinstance(payload.get("intent"), dict):
+                    payload["intent"]["budget_min"] = entities["price_min"]
         
         # Single endpoint for all modes
         endpoint = f"{state['worker_url']}/recommend"
-        
-        # Add budget filters if present
-        if "price_max" in state["entities"]:
-            if "intent" not in payload:
-                payload["intent"] = {}
-            payload["intent"]["budget_max"] = state["entities"]["price_max"]
-        if "price_min" in state["entities"]:
-            if "intent" not in payload:
-                payload["intent"] = {}
-            payload["intent"]["budget_min"] = state["entities"]["price_min"]
-        
+
         # Debug logging
         logger.info(f"🔍 Recommendation payload: {payload}")
         logger.info(f"⏳ Recommendation worker timeout: {WORKER_TIMEOUT_SECONDS}s")
-        
+
         # Call microservice
         response = requests.post(endpoint, json=payload, timeout=WORKER_TIMEOUT_SECONDS)
         response.raise_for_status()
@@ -752,9 +1008,24 @@ async def call_recommendation_worker(state: SalesAgentState) -> SalesAgentState:
         logger.info(f"📥 Recommendation response: {len(data.get('recommended_products', []))} products")
         
         # Format response - CHECK THE CORRECT KEY NAME
-        recommendations = data.get("recommended_products", [])  # Changed from "recommendations"
+        recommendations = data.get("recommended_products", [])
         if recommendations:
-            state["response"] = f"I found {len(recommendations)} great options for you! "
+            mode_used = rec_ctx.get("mode", "normal") if rec_ctx else payload.get("mode", "normal")
+            if mode_used == "gifting_genius":
+                intro = f"Here are {len(recommendations)} thoughtful gift ideas I found! 🎁"
+            elif mode_used == "trendseer":
+                intro = f"Here are {len(recommendations)} trending picks for you! 🔮"
+            else:
+                intro = f"I found {len(recommendations)} great options for you! ✨"
+
+            # Clear recommendation clarification state — flow is complete
+            _REC_CTX_STORE.pop(session_token, None)
+            _REC_AWAITING_STORE.pop(session_token, None)
+            state["metadata"].pop("recommendation_context", None)
+            state["metadata"].pop("awaiting_recommendation_clarification", None)
+            state["metadata"].pop("_skip_recommendation", None)
+
+            state["response"] = intro
             state["cards"] = [
                 {
                     "type": "product",
@@ -1486,6 +1757,7 @@ def create_sales_agent_graph() -> StateGraph:
     
     # Add nodes
     workflow.add_node("detect_intent", detect_intent_node)
+    workflow.add_node("clarifying_questions", clarifying_questions_node)
     workflow.add_node("recommendation_worker", call_recommendation_worker)
     workflow.add_node("inventory_worker", call_inventory_worker)
     workflow.add_node("payment_worker", call_payment_worker)
@@ -1503,6 +1775,7 @@ def create_sales_agent_graph() -> StateGraph:
         "detect_intent",
         route_by_intent,
         {
+            "clarifying_questions": "clarifying_questions",
             "recommendation_worker": "recommendation_worker",
             "inventory_worker": "inventory_worker",
             "payment_worker": "payment_worker",
@@ -1517,6 +1790,9 @@ def create_sales_agent_graph() -> StateGraph:
             "fallback_worker": "fallback_worker",
         }
     )
+    
+    # Add edge from clarifying questions to recommendation worker
+    workflow.add_edge("clarifying_questions", "recommendation_worker")
     
     # All workers end the flow
     workflow.add_edge("recommendation_worker", END)
@@ -1605,5 +1881,7 @@ async def process_message(
         "method": final_state["intent_method"],
         "worker": final_state["worker_service"],
         "timestamp": final_state["timestamp"],
-        "error": final_state.get("error")
+        "error": final_state.get("error"),
+        "recommendation_context": final_state.get("metadata", {}).get("recommendation_context"),
+        "awaiting_recommendation_clarification": final_state.get("metadata", {}).get("awaiting_recommendation_clarification", False),
     }
