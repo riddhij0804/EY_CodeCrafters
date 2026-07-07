@@ -22,8 +22,7 @@ load_dotenv(env_path)
 # Add parent directory to path to import modules
 sys.path.insert(0, str(Path(__file__).parent))
 
-from vertex_intent_detector import detect_intent, get_intent_detector
-
+from intent_detection import detect_intent as groq_detect_intent
 
 # Test cases covering different intent types and entity combinations
 TEST_CASES = [

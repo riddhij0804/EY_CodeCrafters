@@ -8,20 +8,20 @@ langgraph
 google-generativeai
 groq
 
-# --- Vertex AI (Google Cloud) ---
-google-cloud-aiplatform
-vertexai
+# # --- Vertex AI (Google Cloud) ---
+# google-cloud-aiplatform
+# vertexai
 
-# --- Vector Store for RAG ---
-chromadb
-sentence-transformers
+# # --- Vector Store for RAG ---
+# chromadb
+# sentence-transformers
 
 # --- Backend API ---
 fastapi
 uvicorn[standard]
 
-# --- Observability ---
-langsmith
+# # --- Observability ---
+# langsmith
 
 # --- Data validation ---
 pydantic
@@ -58,5 +58,4 @@ torchvision
 pillow
 opencv-contrib-python
 faiss-cpu
-supabase
 

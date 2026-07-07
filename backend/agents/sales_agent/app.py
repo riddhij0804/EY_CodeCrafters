@@ -1,8 +1,8 @@
 """
-Sales Agent FastAPI Application with LangGraph + Vertex AI
+Sales Agent FastAPI Application with LangGraph + Groq
 
 A production-ready sales agent that uses:
-- Vertex AI (Gemini) for intelligent intent detection
+- Groq (Llama 3.3) for intelligent intent detection
 - LangGraph for workflow orchestration
 - Microservice architecture for business logic
 
@@ -25,11 +25,20 @@ from pydantic import BaseModel, Field
 import uvicorn
 from dotenv import load_dotenv
 import redis
+import logging
 import sys
 
-# Load environment variables from .env file
-load_dotenv(Path(__file__).parent / '.env')
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
+# Load environment variables from .env file
+BACKEND_ENV = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(BACKEND_ENV, override=True)
+logger.info(f"GROQ KEY = {os.getenv('GROQ_API_KEY')[:12]}...")
 # Add backend to path for Supabase client
 backend_path = Path(__file__).resolve().parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -64,8 +73,8 @@ PAYMENT_SERVICE_URL = os.getenv("PAYMENT_URL", "http://localhost:8003")
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Sales Agent API with LangGraph + Vertex AI",
-    description="Intelligent sales agent powered by Vertex AI intent detection and LangGraph workflow",
+    title="Sales Agent API with LangGraph + Groq",
+    description="Intelligent sales agent powered by Groq intent detection and LangGraph workflow",
     version="2.0.0"
 )
 
@@ -226,9 +235,9 @@ async def root():
     """Root endpoint - service info."""
     return {
         "status": "running",
-        "service": "Sales Agent with LangGraph + Vertex AI",
+        "service": "Sales Agent with LangGraph + Groq",
         "version": "2.0.0",
-        "features": ["Vertex AI Intent Detection", "LangGraph Workflow", "Microservice Integration"]
+        "features": ["Groq Intent Detection", "LangGraph Workflow", "Microservice Integration"]
     }
 
 
@@ -237,7 +246,7 @@ async def health_check():
     """Health check endpoint for monitoring."""
     return {
         "status": "healthy",
-        "service": "Sales Agent with LangGraph + Vertex AI",
+        "service": "Sales Agent with LangGraph + Groq",
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -798,13 +807,13 @@ async def proxy_payment_requests(path: str, request: Request):
 @app.post("/api/message", response_model=AgentResponse)
 async def handle_message(request: MessageRequest):
     """
-    Handle incoming user messages using LangGraph + Vertex AI workflow.
+    Handle incoming user messages using LangGraph + Groq workflow.
     
     Flow:
         1. User message received
         2. Fetch conversation history from session
         3. Run LangGraph workflow:
-           - Intent Detection (Vertex AI)
+           - Intent Detection (Groq)
            - Router (based on intent)
            - Worker Microservice Call
         4. Return structured response to frontend

@@ -3,7 +3,7 @@
 Start all backend services in parallel
 Run: python start_all_services.py
 """
-
+import time
 import subprocess
 import sys
 import os
@@ -15,17 +15,21 @@ BACKEND_DIR = Path(__file__).parent
 # Service configurations: (name, file_path, port)
 # Port assignments MUST match the ports hardcoded in each service's app.py or uvicorn.run()
 SERVICES = [
-    ("Session Manager", "session_manager.py", 8000),  # Must run first for Chat to work
+    ("Session Manager", "session_manager.py", 8000),
+
     ("Inventory", "agents/worker_agents/inventory", 8001),
     ("Loyalty", "agents/worker_agents/loyalty", 8002),
     ("Payment", "agents/worker_agents/payment", 8003),
     ("Fulfillment", "agents/worker_agents/fulfillment", 8004),
     ("Post-Purchase", "agents/worker_agents/post_purchase", 8005),
     ("Stylist", "agents/worker_agents/stylist", 8006),
+
     ("Data API", "data_api.py", 8007),
     ("Recommendation", "agents/worker_agents/recommendation", 8008),
-    ("Virtual Circles", "agents/worker_agents/virtual_circles", 8009),
+
+    # Start AFTER worker agents
     ("Sales Agent", "agents/sales_agent", 8010),
+
     ("Telegram", "agents/worker_agents/telegram", 8011),
     ("Reservation", "agents/worker_agents/reservation", 8012),
     ("Ambient Commerce", "agents/worker_agents/ambient_commerce", 8017),
@@ -58,12 +62,7 @@ def start_service(name, path, port, env_vars=None):
         process = subprocess.Popen(
             [sys.executable, script_name],
             cwd=service_path,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
+            env=env
         )
         return process
     except Exception as e:
@@ -79,11 +78,17 @@ def main():
     
     # Start all services
     for name, directory, port in SERVICES:
-        # Set USE_REAL_AGENTS=true for Sales Agent
         env_vars = {"USE_REAL_AGENTS": "true"} if name == "Sales Agent" else None
+
         process = start_service(name, directory, port, env_vars)
+
         if process:
             processes.append((name, process, port))
+
+        # Give each service time to initialize
+        time.sleep(2)
+        if process and process.poll() is not None:
+            print(f"❌ {name} crashed immediately.")
     
     print("\n" + "=" * 60)
     print(f"✅ Started {len(processes)} services")

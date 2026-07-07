@@ -1,13 +1,14 @@
 """
-LangGraph-based Sales Agent with Vertex AI Intent Detection
+LangGraph-based Sales Agent with Groq Intent Detection
 
 This module defines a LangGraph workflow that:
-1. Detects user intent using Vertex AI
+1. Detects user intent using Groq
 2. Routes to appropriate microservice based on intent
 3. Returns structured response to frontend
 
 Architecture:
-    User Message → Intent Detection (Vertex AI) → Router → Worker Microservice → Response
+    User Message → Intent Detection (Groq) → Router → Worker Microservice → Response
+ → Response
 """
 
 import logging
@@ -28,8 +29,7 @@ from langgraph.graph import StateGraph, END
 from dotenv import load_dotenv
 
 # Import intent detector (absolute import for direct execution)
-from vertex_intent_detector import detect_intent as vertex_detect_intent
-# Agent client (async unified client for workers)
+from intent_detection import detect_intent as groq_detect_intent# Agent client (async unified client for workers)
 from agent_client import call_agent
 # Orders repository for thread-safe CSV persistence
 
@@ -533,7 +533,7 @@ class SalesAgentState(TypedDict):
 
 async def detect_intent_node(state: SalesAgentState) -> SalesAgentState:
     """
-    First node: Detect user intent using Vertex AI.
+    First node: Detect user intent using Groq.
     
     Args:
         state: Current workflow state with user message
@@ -708,12 +708,13 @@ async def detect_intent_node(state: SalesAgentState) -> SalesAgentState:
         return state
     
     try:
-        # Call Vertex AI intent detector
-        result = await vertex_detect_intent(
+    # Call Groq intent detector
+        result = await groq_detect_intent(
             user_message=state["message"],
             conversation_history=state.get("conversation_history", []),
             metadata=state.get("metadata", {})
         )
+
         
         # Update state with intent detection results
         state["intent"] = result["intent"]

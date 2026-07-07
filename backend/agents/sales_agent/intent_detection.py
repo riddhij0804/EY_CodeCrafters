@@ -1,6 +1,6 @@
-"""Vertex AI-powered Intent Detection for Sales Agent.
+"""Groq-powered Intent Detection for Sales Agent.
 
-This module uses Google Vertex AI's Gemini models for advanced intent classification
+This module uses Groq's LLM API (Llama models) for advanced intent classification
 and entity extraction from user messages. It replaces basic regex-based intent detection
 with AI-powered understanding.
 
@@ -8,19 +8,17 @@ Key Features:
 - Multi-intent detection (recommendation, inventory, payment, gifting, etc.)
 - Entity extraction (product names, SKUs, customer IDs, price ranges, categories)
 - Context-aware classification using conversation history
-- Fallback to rule-based detection if Vertex AI is unavailable
+- Fallback to rule-based detection if Groq is unavailable
 - Structured output with confidence scores
 
 Dependencies:
-    pip install google-cloud-aiplatform vertexai
+    pip install groq
 
 Environment Variables:
-    VERTEX_PROJECT_ID: Google Cloud project ID
-    VERTEX_LOCATION: Region (default: us-central1)
-    GOOGLE_APPLICATION_CREDENTIALS: Path to service account JSON key
+    GROQ_API_KEY: Groq API key
 
 Usage:
-    detector = VertexIntentDetector()
+    detector = GroqIntentDetector()
     result = await detector.detect_intent(
         user_message="I want to buy a gift for my mom's birthday under 5000",
         conversation_history=[...]
@@ -34,21 +32,24 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from enum import Enum
+from dotenv import load_dotenv
+from pathlib import Path
+
+BACKEND_ENV = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(BACKEND_ENV, override=True)
 
 try:
-    import vertexai
-    from vertexai.generative_models import GenerativeModel, GenerationConfig
-    VERTEX_AVAILABLE = True
+    from groq import Groq
+    GROQ_AVAILABLE = True
 except ImportError:
-    VERTEX_AVAILABLE = False
-    logging.warning("Vertex AI SDK not installed. Falling back to rule-based detection.")
+    GROQ_AVAILABLE = False
+    logging.warning("Groq SDK not installed. Falling back to rule-based detection.")
 
 
 logger = logging.getLogger(__name__)
 
 
 class IntentType(str, Enum):
-    """Supported intent types for sales conversations."""
     RECOMMENDATION = "recommendation"
     INVENTORY = "inventory"
     PAYMENT = "payment"
@@ -56,64 +57,60 @@ class IntentType(str, Enum):
     COMPARISON = "comparison"
     TREND = "trend"
     AMBIENT_COMMERCE = "ambient_commerce"
+    LOYALTY = "loyalty"
+    SOCIAL_VALIDATION = "social_validation"
     SUPPORT = "support"
     FALLBACK = "fallback"
 
 
-class VertexIntentDetector:
+class GroqIntentDetector:
     """
-    Vertex AI-powered intent detection with entity extraction.
-    
-    Uses Gemini 1.5 Flash for fast, cost-effective intent classification
+    Groq-powered intent detection with entity extraction.
+
+    Uses Llama 3.3 70B Versatile for fast, cost-effective intent classification
     with structured JSON output.
     """
-    
+
     def __init__(
         self,
-        project_id: Optional[str] = None,
-        location: Optional[str] = None,
+        api_key: Optional[str] = None,
         model_name: Optional[str] = None
     ):
         """
-        Initialize Vertex AI client.
-        
+        Initialize Groq client.
+
         Args:
-            project_id: GCP project ID (defaults to VERTEX_PROJECT_ID env var)
-            location: GCP region for Vertex AI endpoint (defaults to VERTEX_LOCATION env var)
-            model_name: Gemini model to use (defaults to VERTEX_MODEL env var)
+            api_key: Groq API key (defaults to GROQ_API_KEY env var)
+            model_name: Groq model to use (defaults to GROQ_MODEL env var)
         """
-        self.project_id = project_id or os.getenv("VERTEX_PROJECT_ID")
-        self.location = location or os.getenv("VERTEX_LOCATION", "us-central1")
-        self.model_name = model_name or os.getenv("VERTEX_MODEL", "gemini-2.0-flash-exp")
-        self.model = None
+        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        self.model_name = model_name or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.client = None
         self._initialized = False
-        
-        # Check if Vertex AI is enabled
-        vertex_enabled = os.getenv("VERTEX_ENABLED", "true").lower() == "true"
-        
-        # Initialize Vertex AI if available and enabled
-        if VERTEX_AVAILABLE and self.project_id and vertex_enabled:
+
+        # Check if Groq is enabled
+        groq_enabled = os.getenv("GROQ_ENABLED", "true").lower() == "true"
+
+        # Initialize Groq if available and enabled
+        if GROQ_AVAILABLE and self.api_key and groq_enabled:
             try:
-                vertexai.init(project=self.project_id, location=self.location)
-                self.model = GenerativeModel(self.model_name)
+                self.client = Groq(api_key=self.api_key)
                 self._initialized = True
-                logger.info(f"✅ Vertex AI initialized successfully!")
-                logger.info(f"   Project: {self.project_id}")
-                logger.info(f"   Location: {self.location}")
+                logger.info(f"✅ Groq initialized successfully!")
                 logger.info(f"   Model: {self.model_name}")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Vertex AI: {e}")
+                logger.error(f"❌ Failed to initialize Groq: {e}")
                 logger.error(f"   Falling back to rule-based intent detection")
                 self._initialized = False
         else:
-            if not vertex_enabled:
-                logger.info("ℹ️  Vertex AI disabled via VERTEX_ENABLED=false")
-            if not VERTEX_AVAILABLE:
-                logger.warning("⚠️  Vertex AI SDK not available - install: pip install google-cloud-aiplatform vertexai")
-            if not self.project_id:
-                logger.warning("⚠️  VERTEX_PROJECT_ID not set in environment")
+            if not groq_enabled:
+                logger.info("ℹ️  Groq disabled via GROQ_ENABLED=false")
+            if not GROQ_AVAILABLE:
+                logger.warning("⚠️  Groq SDK not available - install: pip install groq")
+            if not self.api_key:
+                logger.warning("⚠️  GROQ_API_KEY not set in environment")
             logger.info("ℹ️  Using rule-based intent detection")
-    
+
     def _build_intent_prompt(
         self,
         user_message: str,
@@ -121,11 +118,11 @@ class VertexIntentDetector:
     ) -> str:
         """
         Construct the prompt for intent detection.
-        
+
         Args:
             user_message: Current user input
             conversation_history: Previous conversation turns for context
-            
+
         Returns:
             Formatted prompt string
         """
@@ -139,7 +136,7 @@ class VertexIntentDetector:
                 msg = turn.get("message", "")
                 context_block += f"{sender.upper()}: {msg}\n"
             context_block += "\n"
-        
+
         prompt = f"""You are an expert intent classifier for a retail sales assistant. Analyze the user's message and extract:
 
 1. PRIMARY INTENT (choose one):
@@ -194,9 +191,9 @@ class VertexIntentDetector:
 }}
 
 Respond with ONLY the JSON object, no additional text."""
-        
+
         return prompt
-    
+
     async def detect_intent(
         self,
         user_message: str,
@@ -205,12 +202,12 @@ Respond with ONLY the JSON object, no additional text."""
     ) -> Dict[str, Any]:
         """
         Detect intent and extract entities from user message.
-        
+
         Args:
             user_message: The user's input text
             conversation_history: Previous conversation for context
             metadata: Additional context (user_id, session info, etc.)
-            
+
         Returns:
             Dict containing:
             {
@@ -218,60 +215,69 @@ Respond with ONLY the JSON object, no additional text."""
                 "confidence": float,
                 "entities": dict,
                 "reasoning": str,
-                "method": "vertex_ai|rule_based"
+                "method": "groq|rule_based"
             }
         """
-        # Try Vertex AI first
-        if self._initialized and self.model:
+        # Try Groq first
+        if self._initialized and self.client:
             try:
-                result = await self._detect_with_vertex(user_message, conversation_history)
-                result["method"] = "vertex_ai"
-                logger.info(f"Vertex AI intent: {result['intent']} (confidence: {result['confidence']:.2f})")
+                result = await self._detect_with_groq(user_message, conversation_history)
+                result["method"] = "groq"
+                logger.info(f"Groq detection: {result['intent']} (confidence: {result['confidence']:.2f})")
                 return result
             except Exception as e:
-                logger.error(f"Vertex AI detection failed: {e}")
+                logger.error(f"Groq detection failed: {e}")
                 # Fall through to rule-based backup
-        
+
         # Fallback to rule-based detection
         result = self._detect_with_rules(user_message)
         result["method"] = "rule_based"
         logger.info(f"Rule-based intent: {result['intent']}")
         return result
-    
-    async def _detect_with_vertex(
+
+    async def _detect_with_groq(
         self,
         user_message: str,
         conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> Dict[str, Any]:
         """
-        Use Vertex AI Gemini for intent detection.
-        
+        Use Groq (Llama 3.3 70B Versatile) for intent detection.
+
         Args:
             user_message: User input
             conversation_history: Conversation context
-            
+
         Returns:
             Parsed intent result
         """
         prompt = self._build_intent_prompt(user_message, conversation_history)
-        
-        # Configure for structured JSON output
-        generation_config = GenerationConfig(
-            temperature=0.2,  # Low temperature for consistent classification
-            top_p=0.8,
-            top_k=40,
-            max_output_tokens=512,
-        )
-        
-        # Generate response
-        response = self.model.generate_content(
-            prompt,
-            generation_config=generation_config,
-        )
-        
+
+        # Generate response using Groq chat completions, with JSON mode if supported
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=512,
+                response_format={"type": "json_object"},
+            )
+        except Exception:
+            # Some models/deployments may not support response_format - retry without it,
+            # relying on strict JSON prompting instead.
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=512,
+            )
+
         # Parse JSON response
-        response_text = response.text.strip()
-        
+        response_text = completion.choices[0].message.content.strip()
+
         # Clean up response (remove markdown code blocks if present)
         if response_text.startswith("```json"):
             response_text = response_text[7:]
@@ -280,46 +286,46 @@ Respond with ONLY the JSON object, no additional text."""
         if response_text.endswith("```"):
             response_text = response_text[:-3]
         response_text = response_text.strip()
-        
+
         try:
             # Try to fix common JSON issues
             fixed_text = response_text
-            
+
             # Remove trailing commas before closing braces/brackets
             fixed_text = re.sub(r',\s*([}\]])', r'\1', fixed_text)
-            
+
             # Add missing closing braces if needed
             open_braces = fixed_text.count('{')
             close_braces = fixed_text.count('}')
             if open_braces > close_braces:
                 fixed_text += '}' * (open_braces - close_braces)
-            
+
             result = json.loads(fixed_text)
-            
+
             # Validate required fields
             if "intent" not in result:
                 raise ValueError("Missing 'intent' field in response")
-            
+
             # Set defaults for missing fields
             result.setdefault("confidence", 0.8)
             result.setdefault("entities", {})
             result.setdefault("reasoning", "")
-            
+
             return result
-            
+
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Vertex AI response as JSON: {response_text}")
-            raise ValueError(f"Invalid JSON response from Vertex AI: {e}")
-    
+            logger.error(f"Failed to parse Groq response as JSON: {response_text}")
+            raise ValueError(f"Invalid JSON response from Groq: {e}")
+
     def _detect_with_rules(self, user_message: str) -> Dict[str, Any]:
         """
         Rule-based intent detection as fallback.
-        
-        This is the original regex-based logic for when Vertex AI is unavailable.
-        
+
+        This is the original regex-based logic for when Groq is unavailable.
+
         Args:
             user_message: User input text
-            
+
         Returns:
             Intent detection result
         """
@@ -327,12 +333,12 @@ Respond with ONLY the JSON object, no additional text."""
         intent = IntentType.FALLBACK
         entities = {}
         confidence = 0.6
-        
+
         # Gifting intent (highest priority)
         if re.search(r"\b(gift|present|for my|for her|for him|wife|husband|mom|mother|dad|father|birthday|anniversary)\b", text):
             intent = IntentType.GIFTING
             confidence = 0.85
-            
+
             # Extract occasion
             if re.search(r"\bbirthday\b", text):
                 entities["occasion"] = "birthday"
@@ -342,7 +348,7 @@ Respond with ONLY the JSON object, no additional text."""
                 entities["occasion"] = "wedding"
             else:
                 entities["occasion"] = "gift"
-            
+
             # Extract recipient
             if re.search(r"\b(mom|mother|mum)\b", text):
                 entities["recipient_relation"] = "mother"
@@ -362,22 +368,31 @@ Respond with ONLY the JSON object, no additional text."""
             elif re.search(r"\b(brother)\b", text):
                 entities["recipient_relation"] = "brother"
                 entities["gender"] = "male"
-        
+
         # Recommendation intent
-        elif re.search(r"\b(recommend|suggest|show me|looking for|what are|something like|need|want|interested)\b", text):
-            intent = IntentType.RECOMMENDATION
-            confidence = 0.8
-            
+            elif re.search(
+                r"\b(recommend|suggest|show me|show|find|looking for|what are|something like|need|want|interested|buy|purchase|search)\b",
+                text
+            ):          
+                intent = IntentType.RECOMMENDATION
+                confidence = 0.8
+
+            elif re.search(
+                r"\b(popular|trending|what are people buying|best seller|bestseller|community|liked by others|most bought|viral)\b",
+                text
+            ):
+                intent = IntentType.SOCIAL_VALIDATION
+                confidence = 0.9
             # Extract category
             cat_match = re.search(r"\b(footwear|shoes|sneaker|apparel|clothes|clothing|jacket|shirt|pants|accessories|watch|bag|belt)\b", text)
             if cat_match:
                 entities["category"] = cat_match.group(1).capitalize()
-            
+
             # Extract budget
             budget_match = re.search(r"under\s*(?:rs|₹|inr)?\s*(\d{3,6})", text)
             if budget_match:
                 entities["price_max"] = int(budget_match.group(1))
-            
+
             # Extract style preferences
             if re.search(r"\b(sport|athletic|gym|running)\b", text):
                 entities["style_preference"] = "sporty"
@@ -385,12 +400,12 @@ Respond with ONLY the JSON object, no additional text."""
                 entities["style_preference"] = "formal"
             elif re.search(r"\b(casual|everyday)\b", text):
                 entities["style_preference"] = "casual"
-        
+
         # Inventory check
         elif re.search(r"\b(in stock|available|stock|availability|is there|do you have)\b", text):
             intent = IntentType.INVENTORY
             confidence = 0.9
-            
+
             # Extract SKU
             sku_match = re.search(r"\b(SKU\d{3,6})\b", user_message, re.IGNORECASE)
             if sku_match:
@@ -399,16 +414,20 @@ Respond with ONLY the JSON object, no additional text."""
                 # Extract product name from the message
                 # Pattern: "is there [product name] in stock" or "do you have [product name]"
                 product_patterns = [
-                    r"(?:is there|do you have|available)\s+(.+?)\s+(?:in stock|available|stock)",
-                    r"(?:check|checking)\s+(?:stock|availability)\s+(?:for|of)\s+(.+?)(?:\?|$)",
-                    r"(?:is|are)\s+(.+?)\s+(?:available|in stock)",
+                    r"are\s+(.+?)\s+available",
+                    r"is\s+(.+?)\s+available",
+                    r"do you have\s+(.+)",
+                    r"is there\s+(.+)",
+                    r"(.+?)\s+in stock",
+                    r"availability of\s+(.+)",
+                    r"stock of\s+(.+)",
                 ]
                 for pattern in product_patterns:
                     match = re.search(pattern, text)
                     if match:
                         entities["product_name"] = match.group(1).strip()
                         break
-        
+
         # Visual search / ambient commerce intent
         elif re.search(r"\b(visual search|search by image|search by photo|image search|photo search|upload image|upload photo|scan image|scan photo|camera search|find similar from image)\b", text):
             intent = IntentType.AMBIENT_COMMERCE
@@ -430,26 +449,29 @@ Respond with ONLY the JSON object, no additional text."""
         elif re.search(r"\b(buy|checkout|pay|purchase|place order|proceed)\b", text):
             intent = IntentType.PAYMENT
             confidence = 0.9
-        
+
         # Comparison intent
         elif re.search(r"\b(compare|difference|between|versus|vs|which is better)\b", text):
             intent = IntentType.COMPARISON
             confidence = 0.85
-        
+
         # Trend inquiry
         elif re.search(r"\b(trend|trending|popular|bestseller|top rated|what's hot)\b", text):
             intent = IntentType.TREND
             confidence = 0.85
-        
+
         # Loyalty/rewards intent
-        elif re.search(r"\b(loyalty|points|reward|coupon|discount|offer|promo|cashback|redeem)\b", text):
-            intent = "loyalty"
-            confidence = 0.9
+        elif re.search(
+            r"\b(loyalty|points|reward|rewards|coupon|discount|offer|offers|promo|cashback|redeem|tier|membership|status)\b",
+            text
+        ):
+            intent = IntentType.LOYALTY
+            confidence = 0.95
             # Extract coupon code if present
             coupon_match = re.search(r"\b([A-Z]{3,10}\d{1,3})\b", user_message)
             if coupon_match:
                 entities["coupon_code"] = coupon_match.group(1)
-        
+
         # Support/help
         # Support/help (generic)
         elif re.search(r"\b(help|support|problem|issue|return|refund|cancel|complaint)\b", text):
@@ -476,14 +498,14 @@ Respond with ONLY the JSON object, no additional text."""
                     entities["order_id"] = numeric_match.group(1)
                     intent = IntentType.SUPPORT
                     confidence = 0.75
-        
+
         # Extract customer ID if present
         customer_match = re.search(r"(?:customer\s*id|memberid|id)\s*[:#]?\s*(\d{2,12})", text, re.IGNORECASE)
         if customer_match:
             entities["customer_id"] = customer_match.group(1)
-        
+
         return {
-            "intent": intent.value,
+            "intent": intent.value if isinstance(intent, IntentType) else intent,
             "confidence": confidence,
             "entities": entities,
             "reasoning": "Rule-based pattern matching"
@@ -491,19 +513,19 @@ Respond with ONLY the JSON object, no additional text."""
 
 
 # Singleton instance for reuse
-_detector_instance: Optional[VertexIntentDetector] = None
+_detector_instance: Optional[GroqIntentDetector] = None
 
 
-def get_intent_detector() -> VertexIntentDetector:
+def get_intent_detector() -> GroqIntentDetector:
     """
-    Get or create singleton VertexIntentDetector instance.
-    
+    Get or create singleton GroqIntentDetector instance.
+
     Returns:
-        Shared VertexIntentDetector instance
+        Shared GroqIntentDetector instance
     """
     global _detector_instance
     if _detector_instance is None:
-        _detector_instance = VertexIntentDetector()
+        _detector_instance = GroqIntentDetector()
     return _detector_instance
 
 
@@ -514,16 +536,16 @@ async def detect_intent(
     metadata: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Detect intent from user message using Vertex AI.
-    
+    Detect intent from user message using Groq.
+
     Args:
         user_message: User's input text
         conversation_history: Previous conversation turns
         metadata: Additional context
-        
+
     Returns:
         Intent detection result with entities
-        
+
     Example:
         >>> result = await detect_intent("I need running shoes under 3000")
         >>> print(result['intent'])  # "recommendation"
@@ -536,10 +558,10 @@ async def detect_intent(
 if __name__ == "__main__":
     """Test the intent detector with sample messages."""
     import asyncio
-    
+
     async def test_detector():
-        detector = VertexIntentDetector()
-        
+        detector = GroqIntentDetector()
+
         test_cases = [
             "I want to buy a gift for my mom's birthday under 5000",
             "Show me running shoes",
@@ -548,13 +570,13 @@ if __name__ == "__main__":
             "What are the trending sneakers?",
             "Compare Nike vs Adidas running shoes",
         ]
-        
-        print("Testing Vertex AI Intent Detection\n" + "="*60)
+
+        print("Testing Groq Intent Detection\n" + "="*60)
         for msg in test_cases:
             result = await detector.detect_intent(msg)
             print(f"\nMessage: {msg}")
             print(f"Intent: {result['intent']} (confidence: {result['confidence']:.2f})")
             print(f"Entities: {result['entities']}")
             print(f"Method: {result['method']}")
-    
+
     asyncio.run(test_detector())
